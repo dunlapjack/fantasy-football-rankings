@@ -1,0 +1,52 @@
+{
+    "league_name": "Lebron James",
+    "num_teams": 12,
+    "total_rounds": 15,
+    "roster_slots": {
+        "QB": 1,
+        "RB": 2,
+        "WR": 2,
+        "TE": 1,
+        "FLEX": 1,
+        "K": 1,
+        "DST": 1,
+        "Bench": 8
+    },
+    "scoring": {
+        "pass_yard": 0.04,
+        "pass_td": 6,
+        "interception": -2,
+        "rush_yard": 0.1,
+        "rush_td": 6,
+        "reception": 1,
+        "rec_yard": 0.1,
+        "rec_td": 6,
+        "fumble_lost": -2,
+        "two_point_conversion": 2,
+        "40+_yard_td_bonus": 1,
+        "50+_yard_td_bonus": 2,
+        "kickoff_return_td": 6,
+        "punt_return_td": 6,
+        "fumble_recover_td": 6,
+        "defense_sack": 1,
+        "defense_int": 2,
+        "defense_fumble_recovery": 2,
+        "defense_td": 6,
+        "defense_safety": 2,
+        "defense_blocked_kick": 2,
+        "defense_points_allowed": {
+            "0": 5,
+            "1-6": 4,
+            "7-13": 3
+        },
+        "defense_yards_allowed": {
+            "0-99": 5,
+            "100-199": 3,
+            "200-299": 2
+        }
+    },
+    "keeper_rule": {
+        "cost_if_drafted_last_year": "same round drafted",
+        "cost_if_kept_multiple_in_a_row": "round 1",
+        "cost_if_undrafted_last_year": "no pick lost"}
+}

@@ -1,16 +1,20 @@
 from pathlib import Path
 import polars as pl
 import nflreadpy as nfl
+from src.team_codes import normalize_team_column
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLAYCALLER_PATH = PROJECT_ROOT / "playcaller_history.csv"
 
 OL_POSITIONS = ["C", "G", "T", "OL"]
+UPCOMING_SEASON = 2026
 
 
 def compute_team_tendency(seasons):
     """
-    Pass/rush attempts per game, by team and season.
+    Pass/rush attempts per game, by team and season. This stays
+    historical on purpose -- it's a trailing indicator of how a team
+    actually played, not a "did something change" flag.
     Returns: team, season, pass_att_pg, rush_att_pg
     """
     team_stats = nfl.load_team_stats(seasons=seasons)
@@ -31,47 +35,65 @@ def compute_team_tendency(seasons):
     return tendency
 
 
-def compute_qb_continuity(seasons):
+def get_league_qb_starters(season):
     """
-    Flags whether each team's primary passer (most attempts that season)
-    differs from the prior season's primary passer.
-    Returns: team, season, qb_changed (bool)
+    Latest depth chart snapshot per team, filtered to the presumptive
+    starting QB (pos_rank == 1) for the given season.
     """
+    depth_charts = nfl.load_depth_charts(seasons=[season])
+    latest_dt = depth_charts.group_by("team").agg(pl.col("dt").max().alias("latest_dt"))
+    latest = depth_charts.join(latest_dt, on="team").filter(pl.col("dt") == pl.col("latest_dt"))
+    starters = latest.filter((pl.col("pos_abb") == "QB") & (pl.col("pos_rank") == 1))
+    return starters.select(["team", pl.col("gsis_id").alias("current_qb_id")])
+
+
+def compute_qb_continuity(seasons, upcoming_season=UPCOMING_SEASON):
+    """
+    Compares each team's actual primary passer from the most recent
+    completed season against their CURRENT depth-chart starter for the
+    upcoming season -- forward-looking, not a comparison of two past
+    seasons against each other.
+    Returns: team, qb_changed
+    """
+    most_recent_season = max(seasons)
     player_stats = nfl.load_player_stats(seasons)
-    primary_qb = (
-        player_stats.filter((pl.col("position") == "QB") & (pl.col("season_type") == "REG"))
-        .group_by(["team", "season", "player_id"])
+
+    last_season_primary_qb = (
+        player_stats.filter(
+            (pl.col("position") == "QB")
+            & (pl.col("season_type") == "REG")
+            & (pl.col("season") == most_recent_season)
+        )
+        .group_by(["team", "player_id"])
         .agg(pl.col("attempts").sum().alias("attempts"))
         .sort("attempts", descending=True)
-        .group_by(["team", "season"])
+        .group_by("team")
         .first()
-        .select(["team", "season", "player_id"])
+        .select(["team", "player_id"])
+        .rename({"player_id": "last_season_qb_id"})
     )
 
-    prior_qb = (
-        primary_qb.with_columns((pl.col("season") + 1).alias("season"))
-        .rename({"player_id": "prior_qb_id"})
+    current_starters = get_league_qb_starters(upcoming_season)
+
+    combined = last_season_primary_qb.join(current_starters, on="team", how="left")
+    combined = combined.with_columns(
+        (pl.col("last_season_qb_id") != pl.col("current_qb_id")).fill_null(True).alias("qb_changed")
     )
-
-    qb_change = (
-        primary_qb.join(prior_qb, on=["team", "season"], how="left")
-        .with_columns(
-            (pl.col("player_id") != pl.col("prior_qb_id")).fill_null(True).alias("qb_changed")
-        )
-        .select(["team", "season", "qb_changed"])
-    )
-    return qb_change
+    return combined.select(["team", "qb_changed"])
 
 
-def compute_coach_continuity():
+def compute_coach_continuity(upcoming_season=UPCOMING_SEASON):
     """
-    Reads playcaller_history.csv and cleans changed_from_prior_year into
-    a real boolean (source data stores it as inconsistent-case text).
-    Returns: team, season, coach_changed (bool)
+    Reads playcaller_history.csv and returns whether each team's
+    playcaller changed entering the upcoming season, using the
+    manually-maintained changed_from_prior_year flag for that season's
+    row specifically (not last season's row).
+    Returns: team, coach_changed
     """
     playcallers = pl.read_csv(PLAYCALLER_PATH)
     coach_change = (
-        playcallers.select(["team", "season", "changed_from_prior_year"])
+        playcallers.filter(pl.col("season") == upcoming_season)
+        .select(["team", "changed_from_prior_year"])
         .with_columns(
             pl.col("changed_from_prior_year")
             .cast(pl.String)
@@ -79,24 +101,22 @@ def compute_coach_continuity():
             .eq("true")
             .alias("coach_changed")
         )
-        .select(["team", "season", "coach_changed"])
+        .select(["team", "coach_changed"])
     )
     return coach_change
 
 
-def compute_continuity_score(seasons):
+def compute_continuity_score(seasons, upcoming_season=UPCOMING_SEASON):
     """
-    Combines QB and coach continuity into one 0/1/2 score:
-    0 = both same as last season, 1 = one changed, 2 = both changed.
-    Confirmed via research (see notebook) that this correlates with
-    bigger swings in team pass/rush tendency.
-    Returns: team, season, qb_changed, coach_changed, continuity_score
+    Combines QB and coach continuity into one 0/1/2 score, both
+    forward-looking for the upcoming season.
+    Returns: team, qb_changed, coach_changed, continuity_score
     """
-    qb_change = compute_qb_continuity(seasons)
-    coach_change = compute_coach_continuity()
+    qb_change = compute_qb_continuity(seasons, upcoming_season)
+    coach_change = compute_coach_continuity(upcoming_season)
 
     combined = (
-        qb_change.join(coach_change, on=["team", "season"], how="left")
+        qb_change.join(coach_change, on="team", how="left")
         .with_columns([
             pl.col("qb_changed").fill_null(False),
             pl.col("coach_changed").fill_null(False),
@@ -109,39 +129,42 @@ def compute_continuity_score(seasons):
     return combined
 
 
-def compute_oline_continuity(seasons):
+def compute_oline_continuity(seasons, upcoming_season=UPCOMING_SEASON):
     """
-    For each team-season, finds the top 5 offensive linemen by total
-    offensive snaps that season, then counts how many of those 5 were
-    also top-5 starters for the same team the prior season.
-    Returns: team, season, returning_oline_starters (int, 0-5)
+    Finds each team's top 5 offensive linemen by total offensive snaps
+    in the most recent completed season, then checks how many of those
+    5 are still on that team's CURRENT roster entering the upcoming
+    season -- forward-looking, same fix as QB/coach continuity.
+    Returns: team, returning_oline_starters (int, 0-5)
     """
-    snaps = nfl.load_snap_counts(seasons=seasons)
+    most_recent_season = max(seasons)
+    snaps = nfl.load_snap_counts(seasons=[most_recent_season])
     ol = snaps.filter(pl.col("position").is_in(OL_POSITIONS))
 
     season_snaps = (
-        ol.group_by(["team", "season", "pfr_player_id"])
+        ol.group_by(["team", "pfr_player_id"])
         .agg(pl.col("offense_snaps").sum().alias("total_snaps"))
     )
 
     top5 = (
         season_snaps.sort("total_snaps", descending=True)
-        .group_by(["team", "season"], maintain_order=True)
+        .group_by("team", maintain_order=True)
         .head(5)
     )
 
-    prior_top5 = (
-        top5.with_columns((pl.col("season") + 1).alias("season"))
-        .rename({"pfr_player_id": "prior_pfr_id"})
-        .select(["team", "season", "prior_pfr_id"])
+    current_rosters = (
+        nfl.load_players()
+        .select(["pfr_id", "latest_team"])
+        .rename({"pfr_id": "pfr_player_id", "latest_team": "current_team"})
     )
+    current_rosters = normalize_team_column(current_rosters, column="current_team")
 
-    matched = top5.join(prior_top5, on=["team", "season"], how="left").with_columns(
-        (pl.col("pfr_player_id") == pl.col("prior_pfr_id")).fill_null(False).alias("is_returning")
+    matched = top5.join(current_rosters, on="pfr_player_id", how="left").with_columns(
+        (pl.col("team") == pl.col("current_team")).fill_null(False).alias("is_returning")
     )
 
     returning_counts = (
-        matched.group_by(["team", "season"])
+        matched.group_by("team")
         .agg(pl.col("is_returning").sum().alias("returning_oline_starters"))
     )
     return returning_counts
@@ -153,8 +176,7 @@ def compute_position_competition(player_team_table):
     fantasy_points_per_game.
 
     For each player, computes the average fantasy_points_per_game of
-    their teammates at the same position, excluding themselves --
-    "how good is the competition I'm walking into for touches."
+    their teammates at the same position, excluding themselves.
 
     Returns: player_id, position_competition_ppg
     """
@@ -178,11 +200,14 @@ def compute_position_competition(player_team_table):
     return result
 
 
-def build_situational_features(seasons, veteran_features):
+def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMING_SEASON):
     """
     Combines all situational features into one player-level table.
-    veteran_features must already have a `team` column (call
-    attach_current_team() from features.py before passing it in).
+    veteran_features must already have a `team` column.
+
+    Team tendency is intentionally historical (last actual season).
+    QB continuity, coach continuity, and o-line continuity are all
+    forward-looking for the upcoming season.
 
     Returns: player_id, team, position, pass_att_pg, rush_att_pg,
     qb_changed, coach_changed, continuity_score,
@@ -191,8 +216,8 @@ def build_situational_features(seasons, veteran_features):
     most_recent_season = max(seasons)
 
     tendency = compute_team_tendency(seasons).filter(pl.col("season") == most_recent_season).drop("season")
-    continuity = compute_continuity_score(seasons).filter(pl.col("season") == most_recent_season).drop("season")
-    oline = compute_oline_continuity(seasons).filter(pl.col("season") == most_recent_season).drop("season")
+    continuity = compute_continuity_score(seasons, upcoming_season)
+    oline = compute_oline_continuity(seasons, upcoming_season)
 
     team_features = tendency.join(continuity, on="team", how="left").join(oline, on="team", how="left")
 

@@ -4,6 +4,8 @@ from src.scoring import load_config, calculate_offensive_points
 
 from pathlib import Path
 
+from src.team_codes import normalize_team_column
+
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config.json"
 
 SEASON_WEIGHTS = {2025: 0.5, 2024: 0.3, 2023: 0.2}
@@ -101,4 +103,5 @@ def attach_current_team(veteran_features):
     players = nfl.load_players().select(["gsis_id", "latest_team"]).rename(
         {"gsis_id": "player_id", "latest_team": "team"}
     )
+    players = normalize_team_column(players)
     return veteran_features.join(players, on="player_id", how="left")

@@ -199,6 +199,35 @@ def compute_position_competition(player_team_table):
 
     return result
 
+def compute_recent_injury_flag(seasons):
+    """
+    Flags any player whose roster status was RES (reserve/injured) in
+    their team's final regular-season week of the most recent completed
+    season -- a simple, explicit signal that they ended last season on
+    IR, rather than trying to parse free-text injury descriptions.
+
+    This is intentionally a REFERENCE flag only, like ADP -- it doesn't
+    feed into fantasy_points_per_game or any other feature. It just
+    surfaces "this player ended last season hurt" so it's visible at
+    the draft table.
+
+    Returns: player_id, recent_major_injury (bool)
+    """
+    most_recent_season = max(seasons)
+    rosters = nfl.load_rosters_weekly(seasons=[most_recent_season]).filter(
+        pl.col("game_type") == "REG"
+    )
+
+    last_week_status = (
+        rosters.sort("week")
+        .group_by("gsis_id", maintain_order=True)
+        .last()
+        .select([
+            pl.col("gsis_id").alias("player_id"),
+            (pl.col("status") == "RES").alias("recent_major_injury"),
+        ])
+    )
+    return last_week_status
 
 def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMING_SEASON):
     """
@@ -222,10 +251,14 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
     team_features = tendency.join(continuity, on="team", how="left").join(oline, on="team", how="left")
 
     position_competition = compute_position_competition(veteran_features)
+    injury_flag = compute_recent_injury_flag(seasons)
 
     player_level = (
         veteran_features.select(["player_id", "team", "position"])
         .join(team_features, on="team", how="left")
         .join(position_competition, on="player_id", how="left")
+        .join(injury_flag, on="player_id", how="left")
+        .with_columns(pl.col("recent_major_injury").fill_null(False))
     )
     return player_level
+

@@ -190,14 +190,22 @@ def assign_round_bucket(rookie_class):
 def get_latest_depth_chart(season=CURRENT_ROOKIE_SEASON):
     """
     load_depth_charts() stores a new snapshot row every time it's
-    scraped, so this keeps only the most recent snapshot per team.
+    scraped, so this keeps only the most recent snapshot per team. It
+    also filters to offensive positions (QB/RB/WR/TE) only -- a single
+    player can appear multiple times in the same snapshot under
+    different pos_abb values for special-teams roles (e.g. a WR who
+    also returns kicks/punts shows up as WR, KR, and PR). Without this
+    filter those extra rows fan out through every downstream join that
+    keys on player_id, compounding at each stage.
     """
     depth_charts = nfl.load_depth_charts(seasons=[season])
     latest_dt = depth_charts.group_by("team").agg(pl.col("dt").max().alias("latest_dt"))
     latest = (
         depth_charts.join(latest_dt, on="team")
         .filter(pl.col("dt") == pl.col("latest_dt"))
+        .filter(pl.col("pos_abb").is_in(OFFENSE_POSITIONS))
         .select([pl.col("gsis_id").alias("player_id"), "pos_rank"])
+        .unique(subset=["player_id"], keep="first")
     )
     return latest
 

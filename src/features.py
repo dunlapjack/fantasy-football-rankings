@@ -13,7 +13,7 @@ OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
 
 RAW_STAT_COLUMNS = [
     "passing_yards", "passing_tds", "passing_interceptions",
-    "rushing_yards", "rushing_tds",
+    "carries", "rushing_yards", "rushing_tds",
     "receptions", "targets", "receiving_yards", "receiving_tds",
     "fantasy_points",
 ]

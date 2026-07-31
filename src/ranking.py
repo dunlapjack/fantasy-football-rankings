@@ -8,7 +8,9 @@ import polars as pl
 # specification tested and get no weight -- their
 # adjusted_fantasy_points_per_game is identical to the raw baseline.
 SITUATIONAL_WEIGHTS = {
-    "RB": {"continuity_score": -0.9875},
+    "RB": {"continuity_score": -0.9493, "workload_share": -3.4441, "experience": -0.4674},
+    "WR": {"team_changed": -0.8667, "workload_share": -7.1708, "recent_major_injury": -1.8642, "experience": -0.3873},
+    "TE": {"workload_share": -7.5826, "experience": -0.1898},
 }
 
 

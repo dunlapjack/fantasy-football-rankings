@@ -9,6 +9,9 @@ from src.situational import (
     compute_coach_continuity,
     compute_oline_continuity,
     compute_position_competition,
+    compute_recent_injury_flag,
+    compute_workload_share,
+    compute_experience,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +42,25 @@ def get_team_as_of_season(season):
         ])
     )
     return normalize_team_column(first_week)
+
+
+def compute_player_team_changed(target_season):
+    """
+    Player-level analog to qb_changed/coach_changed, which are team-level
+    only and miss free-agent/trade moves entirely -- e.g. Kenneth Walker
+    reads as "no continuity change" under the existing flags because
+    neither Seattle's nor Kansas City's own coach/QB situation shifted,
+    even though Walker himself is on a brand new roster, scheme, and QB.
+    Flags whether a player's team-as-of-the-start-of-target_season differs
+    from their team-as-of-the-start-of-the-prior season.
+    Returns: player_id, team_changed
+    """
+    current = get_team_as_of_season(target_season).rename({"team": "current_team"})
+    prior = get_team_as_of_season(target_season - 1).rename({"team": "prior_team"})
+    combined = current.join(prior, on="player_id", how="left")
+    return combined.with_columns(
+        (pl.col("current_team") != pl.col("prior_team")).fill_null(True).alias("team_changed")
+    ).select(["player_id", "team_changed"])
 
 
 def resolve_oline_current_teams_historical(season):
@@ -119,7 +141,8 @@ def build_backtest_season(target_season):
 
     baseline = (
         build_veteran_feature_table(baseline_seasons)
-        .select(["player_id", "player_name", "position", "fantasy_points_per_game"])
+        .select(["player_id", "player_name", "position", "fantasy_points_per_game",
+                  "carries_per_game", "targets_per_game"])
         .rename({"fantasy_points_per_game": "baseline_ppg"})
     )
 
@@ -154,11 +177,24 @@ def build_backtest_season(target_season):
         {"baseline_ppg": "fantasy_points_per_game"}
     )
     position_competition = compute_position_competition(position_competition_input)
+    team_changed = compute_player_team_changed(target_season)
+
+    workload_share = compute_workload_share(baseline_with_team, tendency)
+    injury = compute_recent_injury_flag([reference_season])
+    experience = compute_experience(target_season)
 
     combined = (
         baseline_with_team.join(actual, on="player_id", how="left")
         .join(team_features, on="team", how="left")
         .join(position_competition, on="player_id", how="left")
+        .join(team_changed, on="player_id", how="left")
+        .join(workload_share, on="player_id", how="left")
+        .join(injury, on="player_id", how="left")
+        .join(experience, on="player_id", how="left")
+        .with_columns([
+            pl.col("team_changed").fill_null(True),
+            pl.col("recent_major_injury").fill_null(False),
+        ])
         .filter(pl.col("actual_ppg").is_not_null())
         .with_columns([
             (pl.col("actual_ppg") - pl.col("baseline_ppg")).alias("delta"),

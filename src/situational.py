@@ -215,6 +215,29 @@ def compute_position_competition(player_team_table):
 
     return result
 
+def compute_workload_share(features_with_usage, tendency):
+    """
+    Player's own share of his team's opportunities -- rushing share for
+    RB, target share for WR/TE. A more direct measure of "does this
+    player have the job" than a teammate's raw PPG
+    (position_competition_ppg tested flat, p=0.77, on the RB backtest).
+    `features_with_usage` needs player_id, team, position,
+    carries_per_game, targets_per_game. `tendency` needs team,
+    pass_att_pg, rush_att_pg.
+    Returns: player_id, workload_share
+    """
+    joined = features_with_usage.select(
+        ["player_id", "team", "position", "carries_per_game", "targets_per_game"]
+    ).join(tendency, on="team", how="left")
+    return joined.with_columns(
+        pl.when(pl.col("position") == "RB")
+        .then(pl.col("carries_per_game") / pl.col("rush_att_pg"))
+        .when(pl.col("position").is_in(["WR", "TE"]))
+        .then(pl.col("targets_per_game") / pl.col("pass_att_pg"))
+        .otherwise(None)
+        .alias("workload_share")
+    ).select(["player_id", "workload_share"])
+
 def compute_recent_injury_flag(seasons):
     """
     Flags any player whose roster status was RES (reserve/injured) in
@@ -245,6 +268,65 @@ def compute_recent_injury_flag(seasons):
     )
     return last_week_status
 
+def compute_experience(target_season):
+    """
+    Years since a player's rookie season, via load_players()'s
+    rookie_season field (already used in rookies.py) -- an aging-curve
+    proxy that needs no birthdate and works identically for a historical
+    target_season or the live 2026 upcoming_season.
+    Returns: player_id, experience
+    """
+    players = nfl.load_players().select([
+        pl.col("gsis_id").alias("player_id"), "rookie_season",
+    ])
+    return players.with_columns(
+        (pl.lit(target_season) - pl.col("rookie_season")).alias("experience")
+    ).select(["player_id", "experience"])
+
+def compute_live_team_changed(upcoming_season=UPCOMING_SEASON):
+    """
+    Live-path equivalent of backtest.py's compute_player_team_changed --
+    that function only works for a completed historical target_season
+    (it needs real roster data for both years). For the live 2026 score,
+    "current team" instead comes from load_players()'s latest_team (the
+    same source resolve_oline_current_teams_live() uses), compared
+    against the player's team as of the start of the most recently
+    completed season (2025), resolved from actual weekly roster data.
+
+    This can't just import backtest.py's get_team_as_of_season() --
+    backtest.py already imports from this file, so importing it back
+    here would create a circular import -- so the prior-team lookup is
+    duplicated here in miniature.
+
+    Returns: player_id, team_changed
+    """
+    prior_season = upcoming_season - 1
+    prior_rosters = nfl.load_rosters_weekly(seasons=[prior_season]).filter(
+        pl.col("game_type") == "REG"
+    )
+    prior_team = (
+        prior_rosters.sort("week")
+        .group_by("gsis_id", maintain_order=True)
+        .first()
+        .select([
+            pl.col("gsis_id").alias("player_id"),
+            pl.col("team").alias("prior_team"),
+        ])
+    )
+    prior_team = normalize_team_column(prior_team, column="prior_team")
+
+    current_team = nfl.load_players().select([
+        pl.col("gsis_id").alias("player_id"),
+        pl.col("latest_team").alias("current_team"),
+    ])
+    current_team = normalize_team_column(current_team, column="current_team")
+
+    combined = current_team.join(prior_team, on="player_id", how="left")
+    return combined.with_columns(
+        (pl.col("current_team") != pl.col("prior_team")).fill_null(True).alias("team_changed")
+    ).select(["player_id", "team_changed"])
+
+
 def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMING_SEASON):
     """
     Combines all situational features into one player-level table.
@@ -256,7 +338,8 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
 
     Returns: player_id, team, position, pass_att_pg, rush_att_pg,
     qb_changed, coach_changed, continuity_score,
-    returning_oline_starters, position_competition_ppg
+    returning_oline_starters, position_competition_ppg,
+    recent_major_injury, workload_share, experience, team_changed
     """
     most_recent_season = max(seasons)
 
@@ -269,11 +352,21 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
     position_competition = compute_position_competition(veteran_features)
     injury_flag = compute_recent_injury_flag(seasons)
 
+    workload_share = compute_workload_share(veteran_features, tendency)
+    experience = compute_experience(upcoming_season)
+    team_changed = compute_live_team_changed(upcoming_season)
+
     player_level = (
         veteran_features.select(["player_id", "team", "position"])
         .join(team_features, on="team", how="left")
         .join(position_competition, on="player_id", how="left")
         .join(injury_flag, on="player_id", how="left")
-        .with_columns(pl.col("recent_major_injury").fill_null(False))
+        .join(workload_share, on="player_id", how="left")
+        .join(experience, on="player_id", how="left")
+        .join(team_changed, on="player_id", how="left")
+        .with_columns([
+            pl.col("recent_major_injury").fill_null(False),
+            pl.col("team_changed").fill_null(True),
+        ])
     )
     return player_level

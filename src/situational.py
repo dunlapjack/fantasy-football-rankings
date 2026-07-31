@@ -91,6 +91,7 @@ def compute_coach_continuity(upcoming_season=UPCOMING_SEASON):
     Returns: team, coach_changed
     """
     playcallers = pl.read_csv(PLAYCALLER_PATH)
+    playcallers = normalize_team_column(playcallers)
     coach_change = (
         playcallers.filter(pl.col("season") == upcoming_season)
         .select(["team", "changed_from_prior_year"])
@@ -129,12 +130,34 @@ def compute_continuity_score(seasons, upcoming_season=UPCOMING_SEASON):
     return combined
 
 
-def compute_oline_continuity(seasons, upcoming_season=UPCOMING_SEASON):
+def resolve_oline_current_teams_live():
+    """
+    Live path: maps each offensive lineman's pfr_id to their CURRENT
+    (2026) team via load_players()'s latest_team. This is the "who's
+    still here" half of o-line continuity for the live draft-day score.
+    Returns: pfr_player_id, current_team
+    """
+    current_rosters = (
+        nfl.load_players()
+        .select(["pfr_id", "latest_team"])
+        .rename({"pfr_id": "pfr_player_id", "latest_team": "current_team"})
+    )
+    return normalize_team_column(current_rosters, column="current_team")
+
+
+def compute_oline_continuity(seasons, current_rosters):
     """
     Finds each team's top 5 offensive linemen by total offensive snaps
-    in the most recent completed season, then checks how many of those
-    5 are still on that team's CURRENT roster entering the upcoming
-    season -- forward-looking, same fix as QB/coach continuity.
+    in the most recent season within `seasons`, then checks how many of
+    those 5 appear in `current_rosters` on the same team.
+
+    `current_rosters` must supply columns [pfr_player_id, current_team]
+    -- for the live 2026 score, pass resolve_oline_current_teams_live().
+    For a historical backtest season, pass
+    backtest.resolve_oline_current_teams_historical(season) instead --
+    the matching logic below is identical either way; only how
+    "current team" gets resolved differs between live and backtest.
+
     Returns: team, returning_oline_starters (int, 0-5)
     """
     most_recent_season = max(seasons)
@@ -151,13 +174,6 @@ def compute_oline_continuity(seasons, upcoming_season=UPCOMING_SEASON):
         .group_by("team", maintain_order=True)
         .head(5)
     )
-
-    current_rosters = (
-        nfl.load_players()
-        .select(["pfr_id", "latest_team"])
-        .rename({"pfr_id": "pfr_player_id", "latest_team": "current_team"})
-    )
-    current_rosters = normalize_team_column(current_rosters, column="current_team")
 
     matched = top5.join(current_rosters, on="pfr_player_id", how="left").with_columns(
         (pl.col("team") == pl.col("current_team")).fill_null(False).alias("is_returning")
@@ -246,7 +262,7 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
 
     tendency = compute_team_tendency(seasons).filter(pl.col("season") == most_recent_season).drop("season")
     continuity = compute_continuity_score(seasons, upcoming_season)
-    oline = compute_oline_continuity(seasons, upcoming_season)
+    oline = compute_oline_continuity(seasons, resolve_oline_current_teams_live())
 
     team_features = tendency.join(continuity, on="team", how="left").join(oline, on="team", how="left")
 
@@ -261,4 +277,3 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
         .with_columns(pl.col("recent_major_injury").fill_null(False))
     )
     return player_level
-

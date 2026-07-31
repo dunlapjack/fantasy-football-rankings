@@ -5,6 +5,8 @@ import polars as pl
 # other mismatches turn up later.
 TEAM_ABBR_FIXES = {
     "AZ": "ARI",
+    "ARZ": "ARI",
+    "LAR": "LA",
 }
 
 

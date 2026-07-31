@@ -4,6 +4,7 @@ from src.features import build_veteran_feature_table, attach_current_team
 from src.situational import build_situational_features
 from src.rookies import build_rookie_feature_table
 from src.adp import attach_adp
+from src.ranking import apply_situational_weights
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "player_features.csv"
@@ -31,6 +32,7 @@ def build_player_feature_table(output_path=DEFAULT_OUTPUT_PATH):
     )
 
     full_table = attach_adp(full_table)
+    full_table = apply_situational_weights(full_table)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

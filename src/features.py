@@ -8,7 +8,7 @@ from src.team_codes import normalize_team_column
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config.json"
 
-SEASON_WEIGHTS = {2025: 0.5, 2024: 0.3, 2023: 0.2}
+RECENCY_WEIGHTS = [0.5, 0.3, 0.2]  # most-recent-first; applies to any 3-year window
 OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
 
 RAW_STAT_COLUMNS = [
@@ -42,7 +42,7 @@ def aggregate_season_stats(raw_stats):
             [pl.col(c).sum().alias(c) for c in RAW_STAT_COLUMNS]
             + [
                 pl.len().alias("games_played"),
-                pl.col("player_name").last().alias("player_name"),
+                pl.col("player_display_name").last().alias("player_name"),
                 pl.col("position").last().alias("position"),
             ]
         )
@@ -59,6 +59,19 @@ def aggregate_season_stats(raw_stats):
     return grouped.select(keep_cols)
 
 
+def get_recency_weights(seasons_present):
+    """
+    Maps a list of seasons to weights based on recency RANK, not
+    absolute season number -- most recent season present = 50%,
+    middle = 30%, oldest = 20%. This lets the same 3-year weighting
+    scheme apply to any historical window (e.g. "entering 2024" uses
+    2021/2022/2023 the same way "entering 2026" uses 2023/2024/2025),
+    which the Phase 5 backtest needs.
+    """
+    sorted_desc = sorted(seasons_present, reverse=True)
+    return {s: w for s, w in zip(sorted_desc, RECENCY_WEIGHTS)}
+
+
 def apply_season_weighting(season_stats):
     per_game_cols = [c for c in season_stats.columns if c.endswith("_per_game")]
     weighted_rows = []
@@ -66,7 +79,7 @@ def apply_season_weighting(season_stats):
     for group_key, player_df in season_stats.group_by("player_id"):
         player_id = group_key[0]
         seasons_present = player_df["season"].to_list()
-        raw_weights = {s: SEASON_WEIGHTS[s] for s in seasons_present}
+        raw_weights = get_recency_weights(seasons_present)
         total_weight = sum(raw_weights.values())
         normalized_weights = {s: w / total_weight for s, w in raw_weights.items()}
         weighted_stats = {}

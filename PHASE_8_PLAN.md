@@ -88,11 +88,13 @@ Two features that are currently too blunt.
   steeper and starts earlier. Test quadratic or binned age against the current term.
 - **CP3** — Backtest both, keep what's significant.
 
-### Phase 11 — Injury-aware baseline (Aug 15–18)
+### Phase 11 — Baseline confidence, injuries, and PUP (Aug 15–18)
 
-The 3-year weighted baseline silently blends games missed and diminished-role injury
-seasons into the projection, which drags down exactly the high-ceiling players you
-most want ranked correctly.
+Three related problems, all versions of "how much should we trust this number."
+
+**A. Injury-blended baselines.** The 3-year weighted baseline silently folds games
+missed and diminished-role injury seasons into the projection, dragging down exactly
+the high-ceiling players you most want ranked correctly.
 
 - **CP1** — Quantify: how many top-100 players have a season in the window with
   materially reduced games played?
@@ -100,6 +102,31 @@ most want ranked correctly.
   seasons below a games threshold — against actual next-season PPG.
 - **CP3** — Adopt whichever backtests better; note this touches `features.py`, which
   everything downstream depends on. Re-verify the Phase 3 spot-checks after changing it.
+
+**B. Small-sample veterans.** A baseline built on 8 games is treated with exactly the
+same confidence as one built on 37. Cam Skattebo ranks 11th on 8 games, Omarion
+Hampton 18th on 9, Phil Mafah projects 13.4 PPG on a single game.
+
+`baseline_low_confidence` does NOT cover this and never will — it flags a rookie
+*cohort bucket* with too few historical players (`rookies.py:99`), and `pipeline.py:19`
+hardcodes it `False` for every veteran. It also isn't displayed on the board or read by
+anything downstream. This needs a separate signal.
+
+- **CP4** — Add a games-played confidence measure for veterans; surface it on the board.
+- **CP5** — Test shrinking low-sample baselines toward the position mean, with the
+  shrinkage strength backtested rather than picked by feel.
+
+**C. PUP / NFI treatment.** `injury_overrides.csv` currently has one binary lever:
+`OUT_SEASON` removes a player, everything else is a note. But PUP means missing *at
+least* the first four games — not a maybe. George Kittle (torn Achilles, 13.09 adj PPG,
+ADP 108) and Zach Charbonnet (torn ACL, 10.44, ADP 143) both show at full value today.
+
+- **CP6** — Add a partial games-available haircut for `PUP` and `NFI` rather than the
+  current all-or-nothing treatment. Scale the projection by expected share of the
+  season available, so a 4-game absence costs roughly 4/17 of the value.
+- **Open question:** whether the haircut should hit `adjusted_fantasy_points_per_game`
+  (changes VOR and rank) or only a separate "expected total points" column (leaves PPG
+  honest). PPG and season-long value diverge here for the first time in the project.
 
 ### Phase 12 — Rookie-specific model (Aug 19–23)
 

@@ -21,6 +21,17 @@ def apply_situational_weights(player_features):
     position-specific weights from SITUATIONAL_WEIGHTS. Positions not
     listed in SITUATIONAL_WEIGHTS (currently QB, WR, TE, K, DST) pass
     through with zero adjustment.
+
+    Rookies (`is_rookie`) never get a situational adjustment, regardless
+    of position. Every weight above was estimated from veteran deltas --
+    actual PPG minus the player's OWN trailing 3-year baseline -- and a
+    rookie's "baseline" is a cohort projection, not personal history, so
+    these coefficients were never validated on that population. It also
+    sidesteps real data artifacts that only show up for rookies: e.g.
+    `team_changed` compares this season's team to last season's roster,
+    which a rookie was never on, so it defaults to "changed" for nearly
+    every rookie regardless of actual situation -- not a meaningful
+    signal, just an artifact of not existing in the NFL yet.
     """
     adjustment = pl.lit(0.0)
     for position, weights in SITUATIONAL_WEIGHTS.items():
@@ -28,6 +39,8 @@ def apply_situational_weights(player_features):
         for feature, weight in weights.items():
             position_adjustment = position_adjustment + pl.col(feature).fill_null(0) * weight
         adjustment = pl.when(pl.col("position") == position).then(position_adjustment).otherwise(adjustment)
+
+    adjustment = pl.when(pl.col("is_rookie")).then(0.0).otherwise(adjustment)
 
     return player_features.with_columns(
         (pl.col("fantasy_points_per_game") + adjustment).alias("adjusted_fantasy_points_per_game")

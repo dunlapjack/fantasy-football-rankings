@@ -368,5 +368,21 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
             pl.col("recent_major_injury").fill_null(False),
             pl.col("team_changed").fill_null(True),
         ])
+        .with_columns(
+            # workload_share is carries(or targets)/game measured against the
+            # player's CURRENT team's pass/rush attempts per game -- but the
+            # numerator (his own per-game rate) is a trailing average that,
+            # for a player who just switched teams, was mostly or entirely
+            # earned on his OLD team. Dividing old-team volume by new-team
+            # pace is an apples-to-oranges number (e.g. David Montgomery:
+            # DET-era carries/game over HOU's 2025 rush attempts/game), so
+            # it's nulled out here rather than trusted -- fill_null(0) in
+            # apply_situational_weights then treats it as "no opinion" for
+            # these players instead of applying a possibly-wrong penalty.
+            pl.when(pl.col("team_changed"))
+            .then(None)
+            .otherwise(pl.col("workload_share"))
+            .alias("workload_share")
+        )
     )
     return player_level

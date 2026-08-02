@@ -217,7 +217,23 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-data/
+# Generated data. Note this must be `data/*`, not `data/` -- git cannot
+# re-include a file whose PARENT DIRECTORY is excluded, so an exception
+# below would silently do nothing with a bare `data/`.
+data/*
+
+# ...except the fitted model weights. These are what actually define a
+# given board: small, readable, and diffable. Since nflverse and ADP data
+# shift daily, a board built last week can't be reproduced from scratch --
+# but with the weights tracked there's a record of exactly what model
+# produced it. This is the archive; the .xlsx is just a rendering of it.
+!data/situational_weights.json
+
+# Draft boards are build artifacts now that src/build_board.py exists.
+# Binary, useless diffs, and regenerable on demand -- delete old versions
+# freely. Recover any previously committed one with:
+#   git checkout <commit> -- 2026_Draft_Board_v7.xlsx
+2026_Draft_Board_v*.xlsx
 
 # Excel lock files (created while a workbook is open)
 ~$*

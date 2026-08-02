@@ -37,6 +37,13 @@ from openpyxl.utils import get_column_letter
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FEATURES_PATH = PROJECT_ROOT / "data" / "player_features.csv"
 CONFIG_PATH = PROJECT_ROOT / "league_config.json"
+INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
+
+# Status in injury_overrides.csv that removes a player from contention.
+# Any OTHER status string is recorded in the Notes column but changes no
+# ranking -- so you can jot "QUESTIONABLE - hamstring" as a reminder
+# without it silently moving anyone.
+OUT_STATUS = "OUT_SEASON"
 
 # How the single FLEX slot is expected to be filled across the league.
 # This is a modeling ASSUMPTION, not a league rule -- it's the standard
@@ -57,6 +64,7 @@ POSITION_FILLS = {
 }
 UNDRAFTABLE_FILL = "D9D9D9"  # gray: has ADP but ranks past the last pick
 NO_ADP_FILL = "F4CCCC"       # pink: no real ADP, hard-capped to the bottom
+OUT_FILL = "E06666"          # strong red: out for the season, do not draft
 HEADER_FILL = "1F4E78"
 INJURY_FILL = "FF0000"
 
@@ -71,6 +79,80 @@ COLUMNS = [
 def load_config(path=CONFIG_PATH):
     with open(path) as f:
         return json.load(f)
+
+
+def apply_injury_overrides(players, path=INJURY_OVERRIDES_PATH):
+    """
+    Joins the manually-maintained injury_overrides.csv onto the player
+    table, adding `out_for_season` (bool) and `injury_note` (str).
+
+    WHY THIS IS MANUAL
+    ------------------
+    The model's own `recent_major_injury` feature only flags players who
+    ended the 2025 REGULAR SEASON on IR. It is structurally blind to
+    anything that happens in the 2026 offseason or preseason, and no
+    nflverse feed reliably covers August injuries -- official injury
+    reports don't begin until Week 1.
+
+    That blindness is dangerous specifically BECAUSE ADP gets refreshed.
+    The market drops an injured player within hours; the model's
+    projection doesn't move at all, since it's built from trailing
+    2023-25 per-game rates. `value_delta` is (adp_rank - model_rank), so
+    the collapse in ADP shows up as a huge positive value delta and the
+    board recommends him as a bargain. Ricky Pearsall went from -11 to
+    roughly +87 in exactly this way. Without this file, every injury
+    between now and draft day makes the board worse, not staler.
+
+    File format -- player_name,status,note
+    Only status == OUT_STATUS changes the ranking. Anything else is
+    carried into the Notes column and ignored by the model.
+
+    UNMATCHED NAMES RAISE. A typo'd name silently matching nothing would
+    leave an injured player sitting in the draftable pool looking like a
+    steal -- the exact failure this file exists to prevent -- so it fails
+    loudly instead.
+    """
+    empty = players.with_columns([
+        pl.lit(False).alias("out_for_season"),
+        pl.lit(None, dtype=pl.String).alias("injury_note"),
+    ])
+
+    if not Path(path).exists():
+        print(f"No {Path(path).name} found -- no injury overrides applied.")
+        return empty
+
+    overrides = pl.read_csv(path)
+    if overrides.height == 0:
+        print(f"{Path(path).name} is empty -- no injury overrides applied.")
+        return empty
+
+    known_names = set(players.select("player_name").to_series().to_list())
+    unmatched = [
+        name for name in overrides.select("player_name").to_series().to_list()
+        if name not in known_names
+    ]
+    if unmatched:
+        raise ValueError(
+            f"{Path(path).name}: these names match no player in "
+            f"player_features.csv: {unmatched}. Fix the spelling to match "
+            f"the nflverse name exactly -- an unmatched override does "
+            f"nothing, which would leave an injured player draftable."
+        )
+
+    overrides = overrides.select([
+        "player_name",
+        (pl.col("status").cast(pl.String).str.to_uppercase().str.strip_chars()
+         == OUT_STATUS).alias("out_for_season"),
+        pl.col("note").cast(pl.String).alias("injury_note"),
+    ])
+
+    joined = players.join(overrides, on="player_name", how="left").with_columns(
+        pl.col("out_for_season").fill_null(False)
+    )
+
+    out_count = joined.select(pl.col("out_for_season").sum()).item()
+    print(f"Injury overrides: {overrides.height} entries, {out_count} marked {OUT_STATUS}")
+    return joined
 
 
 def compute_replacement_ranks(config):
@@ -115,10 +197,23 @@ def compute_vor(players, replacement_ranks, value_column="adjusted_fantasy_point
         )
         if pool.height == 0:
             continue
+
+        # Players who are out for the season don't count toward
+        # replacement level -- nobody can start them, so they aren't the
+        # freely-available alternative this whole calculation is about.
+        # Removing one from above the replacement rank pulls a slightly
+        # worse player into that slot, which lowers replacement PPG and
+        # correctly makes everyone else at the position a bit more
+        # valuable. VOR is still computed FOR them, so the board can show
+        # what they'd have been worth healthy.
+        available = pool.filter(~pl.col("out_for_season"))
+        if available.height == 0:
+            available = pool
+
         # If a position has fewer players than its replacement rank,
         # fall back to the worst available rather than indexing off the end.
-        index = min(rank, pool.height) - 1
-        replacement_ppg = pool.select(value_column).to_series()[index]
+        index = min(rank, available.height) - 1
+        replacement_ppg = available.select(value_column).to_series()[index]
         frames.append(
             pool.with_columns(
                 (pl.col(value_column) - replacement_ppg).alias("vor")
@@ -189,9 +284,12 @@ def compute_draft_targets(players, teams):
     # player_name stays as a final key because no-ADP players have a null
     # adp and would otherwise still be nondeterministic among themselves.
     # Phase 12 removes the ties themselves.
+    # out_for_season sorts FIRST, so those players land below everyone --
+    # below even the no-ADP block. They keep a real VOR so you can see
+    # what they'd have been worth, but they can never surface as a pick.
     players = players.sort(
-        ["has_adp", "vor", "adp", "player_name"],
-        descending=[True, True, False, False],
+        ["out_for_season", "has_adp", "vor", "adp", "player_name"],
+        descending=[False, True, True, False, False],
         nulls_last=True,
     ).with_row_index("rank", offset=1)
 
@@ -206,7 +304,12 @@ def compute_draft_targets(players, teams):
     rows = players.to_dicts()
     targets = []
     for row in rows:
-        if not row["has_adp"]:
+        if row["out_for_season"]:
+            # No round, ever. The whole point is that this player must not
+            # read as takeable at any price -- and his value_delta gets
+            # blanked in write_workbook for the same reason.
+            targets.append("DO NOT DRAFT — out for season")
+        elif not row["has_adp"]:
             targets.append(format_slot(row["rank"], teams))
         elif row["value_delta"] is not None and row["value_delta"] >= 0:
             cushion = row["adp_stdev"] or 0.0
@@ -237,8 +340,13 @@ def build_notes(replacement_ranks, teams, rounds):
         "missing from the code, forcing a uniform penalty of 3.59 RB / 2.37 WR / 1.58 TE).\n"
         f"Gray rows = ranked past pick {teams * rounds}, the last pick of a {teams}-team "
         f"{rounds}-round draft. Pink rows = no real ADP, hard-capped below every ADP-bearing "
-        "player regardless of stats. Recent Injury (red) = ended last regular season on IR, "
-        "reference only -- it cannot see playoff-time or current-offseason injuries.\n"
+        "player regardless of stats. Recent Injury (red) = ended the 2025 regular season on IR, "
+        "reference only.\n"
+        "DARK RED rows = flagged OUT_SEASON in injury_overrides.csv: sorted below everything, "
+        "Value Δ blanked, no draft round shown. That file is maintained by hand because the "
+        "model cannot see 2026 preseason injuries -- and because refreshing ADP without it is "
+        "actively harmful: the market drops an injured player instantly while the model's "
+        "trailing-average projection does not move, so the gap gets labelled a bargain.\n"
         "Rookies (Rook = R) take no situational adjustment and share one cohort baseline per "
         "position/round, so two rookies of the same draft round can tie exactly. K and DST are "
         "not modeled; draft those separately."
@@ -294,7 +402,11 @@ def write_workbook(board, replacement_ranks, config, output_path):
         rank = row["rank"]
         has_adp = bool(row["has_adp"])
 
-        if not has_adp:
+        out_for_season = bool(row["out_for_season"])
+
+        if out_for_season:
+            fill_color = OUT_FILL
+        elif not has_adp:
             fill_color = NO_ADP_FILL
         elif rank > last_pick:
             fill_color = UNDRAFTABLE_FILL
@@ -302,6 +414,10 @@ def write_workbook(board, replacement_ranks, config, output_path):
             fill_color = POSITION_FILLS.get(row["position"], NO_ADP_FILL)
         fill = PatternFill("solid", start_color=fill_color)
 
+        # Value Δ is blanked for out players. It would otherwise read
+        # hugely positive -- the market drops an injured player while the
+        # model's trailing-average projection doesn't move -- and that gap
+        # is exactly what the column normally labels "bargain."
         values = [
             rank,
             row["position"],
@@ -312,13 +428,14 @@ def write_workbook(board, replacement_ranks, config, output_path):
             row["draft_target"],
             row["team"],
             row["adp_formatted"] if has_adp else None,
-            row["value_delta"] if has_adp else None,
+            row["value_delta"] if (has_adp and not out_for_season) else None,
             has_adp,
             row["bye"] if has_adp else None,
             "R" if row["is_rookie"] else None,
-            "INJURED" if row["recent_major_injury"] else None,
+            ("OUT (2026)" if out_for_season
+             else ("INJURED" if row["recent_major_injury"] else None)),
             row["games_played"],
-            None,  # Notes (manual) -- left blank on purpose, for draft day
+            row.get("injury_note"),  # Notes -- override note, else blank for draft day
         ]
 
         for i, value in enumerate(values, start=1):
@@ -338,7 +455,12 @@ def write_workbook(board, replacement_ranks, config, output_path):
         # text on the row fill -- so it doesn't add visual noise.
         ws.cell(r, 11).font = Font(name=FONT_NAME, size=11, color="FFFFFF")
 
-        if row["recent_major_injury"]:
+        if out_for_season:
+            for i in (3, 7, 14):  # Player, Draft Target, Recent Injury
+                cell = ws.cell(r, i)
+                cell.fill = PatternFill("solid", start_color=INJURY_FILL)
+                cell.font = Font(name=FONT_NAME, size=11, color="FFFFFF", bold=True)
+        elif row["recent_major_injury"]:
             injury = ws.cell(r, 14)
             injury.fill = PatternFill("solid", start_color=INJURY_FILL)
             injury.font = Font(name=FONT_NAME, size=11, color="FFFFFF", bold=True)
@@ -367,6 +489,8 @@ def build_board(features_path=FEATURES_PATH, output_path=None, version=8):
         players = players.with_columns(
             pl.col(column).cast(pl.String).str.to_lowercase().eq("true").alias(column)
         )
+
+    players = apply_injury_overrides(players)
 
     replacement_ranks = compute_replacement_ranks(config)
     print(f"Replacement ranks: {replacement_ranks}")

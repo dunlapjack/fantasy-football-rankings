@@ -302,6 +302,13 @@ to Lebron James. `build_board.py` already derives replacement level from
 `fantasy_season_length`: Lebron James 1–14 with playoffs 15–17 (length 14), Dunlap
 Family 1–12 with playoffs 13–14 (length 12).
 
+**Versioning honesty note.** `MODEL_VERSION` went 8 → 9 for a change that touched the
+filename convention and the ADP columns, not the model. The Lebron James v9 board is
+rank-for-rank and VOR-for-VOR identical to v8 across all 1088 players. By the rule
+stated below — bump only when the model changes — it should have stayed v8. Kept at 9
+because two differently-named files both calling themselves v8 would be worse, but the
+rule is only worth having if exceptions are visible, so this one is written down.
+
 **Board versioning — settled Aug 3.** One file per league, overwritten in place:
 `2026_LebronJames_Board_v9.xlsx` and `2026_DunlapFamily_Board_v9.xlsx`. The version
 number tracks the MODEL, not the build — it bumps when weights or features change and
@@ -327,8 +334,23 @@ different rebuilds with no way to tell them apart.
   model since Phase 3 without a significance test. Phase 13 CP3 fixes that. Age of a
   feature is not evidence for it.
 - **Intercepts always ship with coefficients.** Never transcribe one without the other.
-- **Nothing gets deleted without Jack's approval.** Superseded code gets commented and
-  labeled, not removed.
+- **Dead things get deleted at the end of each phase** (revised Aug 4, replacing
+  "nothing gets deleted without approval"). The original rule existed to guard against
+  losing something irrecoverably. Now that the repo is pushed, that risk is mostly
+  gone — but *mostly* is doing real work in that sentence, so the rule splits:
+
+  - **Tracked by git → delete freely.** `git log --diff-filter=D --name-only` finds it,
+    `git checkout <commit>^ -- <path>` brings it back. A deletion is a reversible edit.
+  - **Untracked or gitignored → confirm first.** Everything under `data/`, plus any
+    board not yet committed. Git has never seen these, so deletion is permanent. Some
+    are regenerable by re-running a module; some are not, and the difference is worth
+    checking rather than assuming.
+  - **Delete from a clean tree.** Cleanup happens after the phase's commit, never
+    alongside uncommitted work — otherwise the recovery command has nothing to recover
+    from.
+  - **Verify redundancy, don't assume it.** Before deleting a superseded artifact,
+    show it's superseded. `2026_Draft_Board_v8.xlsx` was removed only after confirming
+    it matched the v9 Lebron James board on all 1088 players, rank and VOR.
 - **Every phase ends with a Git commit** at the checkpoint boundary.
 - **Exploratory "does this pattern hold" analysis is Jack's hands-on task** — Claude
   builds the scaffolding, Jack runs the exploration and brings back findings.

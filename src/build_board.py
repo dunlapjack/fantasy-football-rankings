@@ -103,12 +103,11 @@ COLUMNS = [
     ("VOR", 8), ("Draft Target", 24), ("Team", 7), ("ADP (Ovr)", 10),
     ("ADP (Rd.Pk)", 12), ("Value Δ (picks)", 12), ("Has ADP", 4), ("Bye", 6),
     ("Rook", 6), ("Recent Injury", 12), ("GP (sample)", 11),
-    # Phase 10. Age is now a model input at RB/WR/TE (it replaced
-    # `experience`, which it beat at every position). Usage Trend is a
-    # model input at RB/TE only -- it failed at WR (p=0.23) and is cut
-    # there, but still prints for all three so a rising or falling WR is
-    # visible at the table. Reading it as signal for WR is exactly the
-    # mistake the p-value warns about.
+    # Phase 10. Age is a model input at RB/WR/TE (it replaced
+    # `experience`, which it beat at every position). Usage Trend is
+    # also a model input at all three -- WR only after the training set
+    # widened from three seasons to five, which took it from p=0.23 to
+    # p=0.034.
     #
     # "Trend n" is how many seasons the slope was fitted on. 3 is a full
     # slope, 2 is a two-point slope, 0 means none could be fitted and the

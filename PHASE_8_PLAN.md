@@ -146,14 +146,20 @@ won cleanly. (Note that "share of team volume" and "same basis as `workload_shar
 turned out to be the same thing — `compute_workload_share` already divides by team
 pace — so the third variant was substituted to keep three genuinely distinct tests.)
 
-| | RB | WR | TE |
+| (on the original 3-season training set) | RB | WR | TE |
 |---|---|---|---|
 | `usage_trend_share` | **+6.98** (p=0.002) | +6.54 (p=0.23) | **+16.79** (p=0.008) |
 | `usage_trend_volume` | +0.26 (p=0.003) | +0.23 (p=0.16) | +0.37 (p=0.061) |
 | `usage_trend_relative` | +1.45 (p=0.024) | +0.55 (p=0.31) | +1.22 (p=0.060) |
 
-Ships at RB and TE. **Cut at WR** (p=0.23, and p=0.96 on 3-season-only players) but
-retained as a board column — the same reference-only treatment ADP gets.
+**Revised after the training window widened (see below).** On 2021–2025 the shipped
+coefficients are RB **+5.68** (p=0.002), WR **+9.27** (p=0.034 in the full spec; the
+shipped value is from the refit after `trend_missing` was cut at WR), TE **+12.49**
+(p=0.010). WR was cut on three seasons and reinstated on five — the coefficient barely
+moved, the error bar shrank. Alpha was fixed at 0.10 beforehand and the test is
+unchanged, so this is a power gain rather than a search for a passing p-value. WR
+nonetheless sits far closer to the line than the other two and is the first
+coefficient that should fall if Phase 13 CP2's holdout disagrees.
 
 Trend does not need the `team_changed` null-out that `workload_share` requires: each
 season's share uses that season's own team, so a mid-window mover still gets an
@@ -221,11 +227,51 @@ a separate numpy/hand-rolled-t-distribution implementation — agreeing to four 
 places on every coefficient, including reproducing the shipped Phase 8 intercepts
 (3.5925 / 2.3653 / 1.5764) exactly.
 
-**Known non-linearity, carried to Phase 13 CP1.** The age slope steepens past 29 at
-RB (−0.687 under 29 vs −0.963 at 29+) and WR (−0.364 vs −0.646). CIs are wide and
-overlap the pooled estimate, and quadratic age tested dead, so linear ships — but the
-linear term is *conservative* on old players, not aggressive, which is the opposite of
-the concern that prompted the check. Worth one more look during the full refit.
+**The post-29 cliff was a small sample, and this is the cleanest lesson of the phase.**
+On three seasons the age slope appeared to steepen sharply past 29 — RB −0.687 under 29
+against −0.963 at 29+, WR −0.364 against −0.646 — and it was written up as a real
+non-linearity to carry into Phase 13. On five seasons it evaporates:
+
+| | under 29 | 29 and over |
+|---|---|---|
+| RB | −0.465 | −0.355 (p=0.42, n=55) |
+| WR | −0.339 | −0.381 (p=0.013, n=135) |
+| TE | −0.180 | −0.074 (p=0.62, n=88) |
+
+One straight line per position fits. Quadratic age remains dead on the larger sample
+too (p = 0.79 to 0.92). The original finding was 32 RBs and 89 WRs aged 29+ drawing a
+shape out of noise — and it was flagged at the time as having wide, overlapping CIs,
+which is exactly the caveat that turned out to be doing the work. **A wide confidence
+interval is not a weaker version of a finding; it is the finding saying it might be
+nothing.**
+
+### Training window widened to 2021–2025 (Aug 4)
+
+Prompted by asking whether more history was available. Two things called "3 years"
+were being conflated:
+
+- **The baseline window** — each player's trailing 3 seasons, weighted 50/30/20. This
+  projects a *player*, and the original instinct that recent football predicts best
+  holds. Unchanged.
+- **The training set** — which target seasons the regression learns from. This
+  estimates what a coaching change or a year of age is *worth*, and those relationships
+  do not go stale the way a player's form does. Small samples were the live constraint.
+
+`playcaller_history.csv` starts at 2021 and `compute_coach_continuity` reads the target
+season's own row, so 2021 and 2022 were already usable with no new manual research.
+Training rows went 947 → **1575**. `build_backtest_dataset` now raises on target
+seasons before `EARLIEST_PLAYCALLER_SEASON` rather than silently returning nulls for
+`coach_changed`.
+
+What moved: WR usage trend passed (above), the post-29 cliff disappeared (above), RB's
+age slope softened from −0.359 to −0.242, and `trend_missing` at RB weakened from
++1.546 (p=0.014) to +1.022 (p=0.037). R² fell at RB (0.236 → 0.171) and TE (0.133 →
+0.119), which is what in-sample R² does when it stops having room to overfit. No
+coefficient flips sign across any of the five leave-one-season-out folds. The
+2-season-slope discount was retested and still isn't warranted (p=0.53 RB, 0.50 TE).
+
+Going earlier than 2021 requires extending `playcaller_history.csv` by hand. Worth
+costing before Phase 12, whose rookie model has the thinnest sample in the project.
 
 ### Phase 11 — Baseline confidence, injuries, and PUP (Aug 8–12)
 
@@ -353,10 +399,10 @@ situational adjustment at all.
   multicollinearity — usage trend, workload share, and age will correlate.
   **Already measured in Phase 10 and it is a non-issue:** corr(workload_share, trend)
   is +0.109 / +0.064 / +0.111 at RB / WR / TE, and corr(workload_share, age) tops out
-  at +0.255. Leave-one-season-out flips no shipped coefficient's sign. The open item
-  here is not collinearity but the age non-linearity noted under Phase 10 — the slope
-  steepens past 29 at RB and WR while a quadratic term tests dead, which suggests the
-  curvature is real but not quadratic.
+  at +0.255. Leave-one-season-out flips no shipped coefficient's sign across five folds.
+  The age non-linearity that was flagged here has since been withdrawn — it did not
+  survive the wider training window (see Phase 10). Nothing outstanding for this
+  checkpoint beyond the refit itself.
 - **CP2** — Holdout validation: fit on 2023–24, test on 2025. Does the model beat the
   raw baseline out of sample? If not, the added features are overfitting and should be
   cut. This is the honest test the project hasn't run yet. **Not cut for time.**

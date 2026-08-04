@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import polars as pl
 import nflreadpy as nfl
@@ -220,19 +221,77 @@ def build_backtest_season(target_season):
     return combined
 
 
-def build_backtest_dataset(target_seasons=[2023, 2024, 2025]):
+# How far back the training set reaches.
+#
+# WHY 2021 AND NOT EARLIER (Aug 4)
+# --------------------------------
+# The binding constraint is playcaller_history.csv, which is maintained
+# by hand and starts at 2021. compute_coach_continuity() reads the
+# TARGET season's own row, so a 2021 target needs a 2021 row -- which
+# exists. 2020 does not, so 2020 is the first target season that would
+# require new manual research.
+#
+# Everything else reaches back much further: nflverse player stats,
+# weekly rosters, and team stats all predate this comfortably, and
+# baselines for a 2021 target come from 2018-2020, which is fine.
+#
+# Started at 3 seasons on the reasonable assumption that recent football
+# predicts best. That logic applies to a PLAYER'S BASELINE -- how we
+# project him -- but not to the training set, which is only estimating
+# how much a coaching change or a year of age is worth. Those
+# relationships are stable enough that more history is close to free
+# accuracy, and small samples were the live constraint: the 3-season-only
+# usage-trend test had n=113 and couldn't separate a real effect from
+# zero. Phase 12's rookie model (5 draft classes) needs it more still.
+#
+# Caveat worth remembering: 2020 sits inside the baseline window for the
+# 2021-2023 targets. No preseason, opt-outs, COVID absences. It was
+# already there for 2023; widening the window gives it two more targets
+# to influence.
+DEFAULT_TARGET_SEASONS = [2021, 2022, 2023, 2024, 2025]
+
+# Earliest season playcaller_history.csv covers. Targets before this
+# would silently lose coach_changed rather than fail loudly.
+EARLIEST_PLAYCALLER_SEASON = 2021
+
+
+def build_backtest_dataset(target_seasons=None):
     """
     Runs build_backtest_season() for each target season and stacks the
     results into one table -- this is the training set for the
     per-position regression (delta ~ situational features) that
     produces the weights used in the live 2026 composite score.
     """
+    if target_seasons is None:
+        target_seasons = DEFAULT_TARGET_SEASONS
+
+    too_early = [s for s in target_seasons if s < EARLIEST_PLAYCALLER_SEASON]
+    if too_early:
+        raise ValueError(
+            f"Target seasons {too_early} precede playcaller_history.csv, which "
+            f"starts at {EARLIEST_PLAYCALLER_SEASON}. compute_coach_continuity() "
+            f"would return no rows for them and every player in those seasons "
+            f"would silently get a null coach_changed -- a quiet hole in the "
+            f"training set rather than an error. Extend playcaller_history.csv "
+            f"first (Pro Football Reference has coordinator history), or drop "
+            f"those seasons."
+        )
+
     tables = [build_backtest_season(s) for s in target_seasons]
     return pl.concat(tables, how="vertical")
 
 
 if __name__ == "__main__":
-    dataset = build_backtest_dataset()
+    parser = argparse.ArgumentParser(description="Build the backtest training set.")
+    parser.add_argument(
+        "--seasons", type=int, nargs="+", default=DEFAULT_TARGET_SEASONS,
+        help=f"target seasons to train on (default: {DEFAULT_TARGET_SEASONS}). "
+             f"Cannot go earlier than {EARLIEST_PLAYCALLER_SEASON} without "
+             f"extending playcaller_history.csv.",
+    )
+    args = parser.parse_args()
+
+    dataset = build_backtest_dataset(args.seasons)
     print(f"Backtest dataset: {dataset.shape[0]} player-seasons")
     print(dataset.group_by("season").len().sort("season"))
 

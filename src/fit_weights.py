@@ -89,14 +89,28 @@ ALPHA = 0.10
 # to 0.94); binned age was competitive only at TE and non-monotonic
 # there, which is noise rather than a curve.
 #
-# `usage_trend_share` ships at RB and TE. It was tested against two
-# other bases -- raw per-game volume and share-slope-over-mean-share --
-# and beat both. It FAILED at WR (p=0.23, and p=0.96 on 3-season-only
-# players) and is cut there, though it still prints on the board as a
-# reference column.
+# `usage_trend_share` ships at all three positions. It was tested
+# against two other bases -- raw per-game volume and
+# share-slope-over-mean-share -- and beat both.
+#
+# WR is a revision, and the reason is worth recording. On the original
+# 3-season training set it tested p=0.23 and was cut. Widening the
+# window to 2021-2025 (947 -> 1575 rows) moved it to p=0.034 with
+# essentially the same coefficient, which is what a real-but-small
+# effect looks like when it finally gets enough data, not a new finding.
+# It is NOT a case of testing until something passes: alpha was fixed at
+# 0.10 beforehand and the test is identical. But WR sits far closer to
+# the line than RB (0.0016) or TE (0.0097), so it is the first
+# coefficient that should fall if Phase 13 CP2's holdout disagrees.
+#
+# `trend_missing` is a required companion wherever usage_trend_share is
+# mean-imputed -- imputing without a missing indicator invents data. It
+# is listed at all three positions and lets alpha decide: it survives at
+# RB (p=0.037) and is cut at WR (p=0.18) and TE (p=0.73).
 FEATURE_SPECS = {
     "RB": ["continuity_score", "workload_share", "age", "usage_trend_share", "trend_missing"],
-    "WR": ["team_changed", "workload_share", "recent_major_injury", "age"],
+    "WR": ["team_changed", "workload_share", "recent_major_injury", "age",
+           "usage_trend_share", "trend_missing"],
     "TE": ["workload_share", "age", "usage_trend_share", "trend_missing"],
     # QB deliberately absent: nothing tested significant across every
     # specification tried in Phase 5-6, and Phase 10 retested it with

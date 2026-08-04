@@ -460,6 +460,79 @@ ADP 108) and Zach Charbonnet (torn ACL, 10.44, ADP 143) both show at full value 
   (changes VOR and rank) or only a separate "expected total points" column (leaves PPG
   honest). PPG and season-long value diverge here for the first time in the project.
 
+### Phase 11 C and D shipped — CP6, CP7, CP8 closed (Aug 4)
+
+C and D were taken first because neither needs a refit, and both fix things
+visible on the v10 boards today. A and B (injury-blended baselines,
+small-sample shrinkage fit jointly with `trend_missing`) are untouched and
+still carry every note written above them.
+
+**CP6 — replacement level now counts picks, not starters.** `compute_replacement_ranks()`
+takes `total_rounds × num_teams`, subtracts `UNMODELED_SLOTS_PER_TEAM × num_teams`
+for the kickers and defenses that consume real picks but are not modeled, and
+splits the remainder by the position mix of that many players in ADP order,
+out-for-season players removed. The starter-slot rule survives as
+`compute_starter_ranks()` and now feeds only the notes block, where the old and
+new levels print side by side.
+
+| League | Old (starters) | New (drafted) |
+|---|---|---|
+| Lebron James (12) | QB12 / RB29 / WR29 / TE14 | QB22 / RB51 / WR74 / TE21 |
+| Dunlap Family (6) | QB6 / RB14 / WR14 / TE7 | QB8 / RB32 / WR38 / TE6 |
+
+**CP7 — the sanity condition holds, and it is now a test rather than a
+reading.** Quarterbacks inside the top 30 go 1 → 4 on the 12-team board and
+4 → 1 on the 6-team one; Josh Allen goes 11th → 7th on Lebron James and 7th →
+15th on Dunlap. Trey McBride is the only tight end left in either top 30.
+`verify_adjustments.py` gained `check_replacement_levels()`, which rebuilds
+both boards and hard-fails if the best QB or TE ever ranks *higher* in the
+shallow league than the deep one. That assertion is the actual deliverable —
+the bug hid for three phases because nobody compared the two boards, and now
+nothing can be shipped without comparing them.
+
+**Known limitation, deliberately accepted.** The position split comes from
+FFC's 12-team mocks, so the first 84 picks are a 12-team drafter's mix, not a
+6-team drafter's. A 6-team room facing no scarcity would take fewer than 8
+quarterbacks. The error runs conservative — it understates how far QB should
+fall — and a config can override the split outright with an `expected_drafted`
+block once there are real draft results to fit.
+
+**CP8 — PUP/NFI get a partial haircut, and it lands off the ranking.** The
+open question is answered: the haircut does **not** touch
+`adjusted_fantasy_points_per_game`. PPG is a rate, and a torn Achilles does not
+make Kittle worse in the games he plays — it makes him play fewer. Two new
+columns carry it instead: `Exp Gm` (league regular season minus known absence)
+and `Exp Pts` (Adj PPG × Exp Gm). Rank and VOR are unmoved, so nothing
+double-counts if a later phase models availability directly.
+
+`PARTIAL_STATUSES = {PUP, NFI}` defaults to 4 games missed — the NFL rule, not
+an estimate — overridable per player by the new optional `games_missed` column
+in `injury_overrides.csv`. **Kittle is the row to revisit:** four games is
+almost certainly generous for a torn Achilles, and the column is empty for him.
+
+The league-dependence the phase intro demanded now exists: the same four-game
+absence costs 4/12 in Dunlap and 4/14 in Lebron James, read from
+`fantasy_season_length`, denominated on the REGULAR season.
+
+**Also shipped: the "Why (value drivers)" column.** Each player carries a
+signed decomposition of his own situational adjustment — `+0.9 role trend
++3.1pp/yr · −1.4 62% team share · −0.5 age 30` — computed as
+`(value − position_mean) × weight` from the same `situational_weights.json`
+that produces the number beside it, so the two cannot disagree.
+`check_value_drivers()` asserts the full decomposition reconciles to
+`situational_adjustment` to 1e-6. Terms below ±0.15 PPG are hidden and at most
+four print, so the visible string is a summary, not the sum — the test checks
+the identity underneath, which is the thing that could actually rot.
+
+One side effect worth noting: `write_workbook()` no longer addresses columns by
+hardcoded index. Phase 10 left a comment warning that inserting a column would
+shift them all silently; Phase 11 inserts three, so the indices became a
+`COLUMN_INDEX` name lookup instead of obeying the warning.
+
+**MODEL_VERSION 10 → 11 with no refit.** Weights are byte-identical. The bump
+is for the replacement-level change, which reorders the board on ranking logic
+alone.
+
 ### Phase 12 — Rookie-specific model (Aug 13–16)
 
 The biggest remaining structural gap. Rookies get a flat cohort number and no

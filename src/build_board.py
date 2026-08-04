@@ -50,6 +50,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from src.ranking import load_situational_weights
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FEATURES_PATH = PROJECT_ROOT / "data" / "player_features.csv"
 CONFIG_PATH = PROJECT_ROOT / "league_config.json"
@@ -64,7 +66,11 @@ CONFIG_PATH = PROJECT_ROOT / "league_config.json"
 # documented in PHASE_8_PLAN.md. Features changed (age replaced experience;
 # usage_trend_share added at RB and TE) and all three positions were refit,
 # so ranks move for real.
-MODEL_VERSION = 10
+# Phase 11 (Aug 4): 10 -> 11. No refit -- the weights are byte-identical to
+# v10. Replacement level changed from starter slots to expected players
+# drafted (CP6), which moves every VOR and reorders the board, so it is a
+# ranking-logic change and bumps the version even though no coefficient did.
+MODEL_VERSION = 11
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -75,11 +81,36 @@ INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
 # without it silently moving anyone.
 OUT_STATUS = "OUT_SEASON"
 
+# Phase 11 CP8. Statuses that cost a player a KNOWN, PARTIAL slice of the
+# season rather than all of it. PUP and NFI are not opinions about health --
+# they are roster designations with a rule attached: a player who opens the
+# regular season on either list is ineligible for the first four games. That
+# is a floor, not an estimate, which is what separates these from
+# QUESTIONABLE and lets them move a number at all.
+#
+# Anything longer is player-specific and belongs in the optional
+# `games_missed` column of injury_overrides.csv, which overrides this
+# default. Kittle's Achilles is the obvious candidate -- four games is
+# almost certainly generous to him.
+PARTIAL_STATUSES = {"PUP", "NFI"}
+PUP_DEFAULT_GAMES_MISSED = 4
+
 # How the single FLEX slot is expected to be filled across the league.
 # This is a modeling ASSUMPTION, not a league rule -- it's the standard
 # full-PPR split and it only moves replacement levels by a fraction of a
 # roster spot. Documented here because it silently shifts every VOR.
+#
+# Phase 11 CP6 demoted this to a fallback: it is now used only by
+# compute_starter_ranks(), which no longer drives VOR. See
+# compute_replacement_ranks() for why.
 FLEX_SPLIT = {"RB": 0.40, "WR": 0.40, "TE": 0.20}
+
+# Roster slots every team fills but this model does not rank. They still
+# consume real picks, so they must come out of the pick pool before skill
+# positions are allocated -- otherwise a 16-round draft looks like it has
+# 2 x num_teams more skill picks than it does, and replacement level lands
+# too deep at every position.
+UNMODELED_SLOTS_PER_TEAM = 2  # 1 K + 1 DST
 
 MODELED_POSITIONS = ["QB", "RB", "WR", "TE"]
 
@@ -100,7 +131,21 @@ INJURY_FILL = "FF0000"
 
 COLUMNS = [
     ("Rank", 7), ("Pos", 6), ("Player", 24), ("Adj PPG", 9), ("Sit Adj", 8),
-    ("VOR", 8), ("Draft Target", 24), ("Team", 7), ("ADP (Ovr)", 10),
+    ("VOR", 8),
+    # Phase 11 CP8. Availability, kept OUT of the ranking on purpose.
+    # Exp Gm is this league's regular season minus known PUP/NFI absence;
+    # Exp Pts is Adj PPG x Exp Gm. Adj PPG stays an honest per-game rate,
+    # so Kittle does not move in the Rank column -- the cost of missing
+    # September shows up here instead, and it is genuinely a different
+    # number in each league (12-game regular season in Dunlap, 14 in
+    # Lebron James), which no single rank column could express.
+    ("Exp Gm", 8), ("Exp Pts", 9),
+    # Phase 11. Plain-language decomposition of Sit Adj: the largest
+    # signed contributions, relative to an average player at that
+    # position. Generated from the same weights that produce the number
+    # in Sit Adj, so the two cannot disagree.
+    ("Why (value drivers)", 46),
+    ("Draft Target", 24), ("Team", 7), ("ADP (Ovr)", 10),
     ("ADP (Rd.Pk)", 12), ("Value Δ (picks)", 12), ("Has ADP", 4), ("Bye", 6),
     ("Rook", 6), ("Recent Injury", 12), ("GP (sample)", 11),
     # Phase 10. Age is a model input at RB/WR/TE (it replaced
@@ -117,6 +162,12 @@ COLUMNS = [
     ("Age", 6), ("Usage Trend", 11), ("Trend n", 8),
     ("Notes (manual)", 45),
 ]
+
+# Column label -> 1-based sheet index. Phase 10 left a comment warning that
+# "if you insert another column, these all move again" above a block of
+# hardcoded indices; Phase 11 inserts three columns, so that warning gets
+# retired rather than obeyed. Look columns up by name.
+COLUMN_INDEX = {label: i for i, (label, _) in enumerate(COLUMNS, start=1)}
 
 
 def load_config(path=CONFIG_PATH):
@@ -208,9 +259,33 @@ def apply_injury_overrides(players, path=INJURY_OVERRIDES_PATH):
     roughly +87 in exactly this way. Without this file, every injury
     between now and draft day makes the board worse, not staler.
 
-    File format -- player_name,status,note
-    Only status == OUT_STATUS changes the ranking. Anything else is
-    carried into the Notes column and ignored by the model.
+    File format -- player_name,status,note[,games_missed]
+    Only status == OUT_STATUS changes the RANKING. Anything else is
+    carried into the Notes column and leaves rank alone.
+
+    PHASE 11 CP8 -- PUP AND NFI
+    ---------------------------
+    A third case sits between "fine" and "gone." PUP and NFI are not
+    health opinions, they are roster designations with a rule attached: a
+    player who opens the regular season on either list cannot play the
+    first four games. Treating that as a note (the old behavior) had
+    Kittle and Charbonnet showing at full value; treating it as
+    OUT_SEASON would be a lie in the other direction.
+
+    So those statuses set `expected_games_missed` -- four by default, or
+    whatever the optional `games_missed` column says for a specific
+    player. That number feeds Exp Gm / Exp Pts and NOTHING else. It does
+    not touch `adjusted_fantasy_points_per_game`, so it cannot move rank
+    or VOR.
+
+    That restraint is deliberate and it is the phase's open question,
+    answered: PPG is a RATE, and a torn Achilles doesn't make Kittle worse
+    per game he plays -- it makes him play fewer of them. Folding
+    availability into the rate would corrupt the one number the whole
+    model is fitted to predict, and would silently double-count the moment
+    a future phase models availability directly. Season-long value lives
+    in its own column instead, where it can be read against the rate
+    rather than baked into it.
 
     UNMATCHED NAMES RAISE. A typo'd name silently matching nothing would
     leave an injured player sitting in the draftable pool looking like a
@@ -220,6 +295,8 @@ def apply_injury_overrides(players, path=INJURY_OVERRIDES_PATH):
     empty = players.with_columns([
         pl.lit(False).alias("out_for_season"),
         pl.lit(None, dtype=pl.String).alias("injury_note"),
+        pl.lit(0.0).alias("expected_games_missed"),
+        pl.lit(None, dtype=pl.String).alias("injury_status"),
     ])
 
     if not Path(path).exists():
@@ -244,32 +321,213 @@ def apply_injury_overrides(players, path=INJURY_OVERRIDES_PATH):
             f"nothing, which would leave an injured player draftable."
         )
 
+    status = (pl.col("status").cast(pl.String).str.to_uppercase()
+              .str.strip_chars())
+
+    # `games_missed` is optional -- the file is hand-maintained and most
+    # rows have no reason to carry one. Absent column, absent value, and
+    # blank string all fall back to the PUP default.
+    if "games_missed" in overrides.columns:
+        stated_games = pl.col("games_missed").cast(pl.Float64, strict=False)
+    else:
+        stated_games = pl.lit(None, dtype=pl.Float64)
+
     overrides = overrides.select([
         "player_name",
-        (pl.col("status").cast(pl.String).str.to_uppercase().str.strip_chars()
-         == OUT_STATUS).alias("out_for_season"),
+        (status == OUT_STATUS).alias("out_for_season"),
         pl.col("note").cast(pl.String).alias("injury_note"),
+        status.alias("injury_status"),
+        pl.when(status.is_in(list(PARTIAL_STATUSES)))
+          .then(stated_games.fill_null(float(PUP_DEFAULT_GAMES_MISSED)))
+          .otherwise(0.0)
+          .alias("expected_games_missed"),
     ])
 
-    joined = players.join(overrides, on="player_name", how="left").with_columns(
-        pl.col("out_for_season").fill_null(False)
-    )
+    joined = players.join(overrides, on="player_name", how="left").with_columns([
+        pl.col("out_for_season").fill_null(False),
+        pl.col("expected_games_missed").fill_null(0.0),
+    ])
 
     out_count = joined.select(pl.col("out_for_season").sum()).item()
-    print(f"Injury overrides: {overrides.height} entries, {out_count} marked {OUT_STATUS}")
+    partial = joined.filter(pl.col("expected_games_missed") > 0)
+    print(f"Injury overrides: {overrides.height} entries, {out_count} marked {OUT_STATUS}, "
+          f"{partial.height} on PUP/NFI")
+    for row in partial.select(["player_name", "injury_status",
+                               "expected_games_missed"]).iter_rows():
+        print(f"   {row[0]}: {row[1]}, -{row[2]:.0f} games")
     return joined
 
 
-def compute_replacement_ranks(config):
+def compute_expected_points(players, config):
     """
-    How many players at each position get drafted as starters league-wide.
-    That Nth player is 'replacement level' -- the guy you could have for
-    free -- so his PPG is the baseline every other player is measured
-    against.
+    Phase 11 CP8. Adds `expected_games` and `expected_total_points`.
 
-    Derived from league_config.json rather than hardcoded, so changing
-    league size or roster slots flows through automatically. For the
-    current 12-team setup this reproduces v7's QB12 / RB29 / WR29 / TE14.
+    `expected_games` is this LEAGUE'S regular season minus known absence,
+    and the denominator is the regular season on purpose -- not the
+    17-week NFL calendar. Weeks 15-17 are worth nothing in a league whose
+    final is week 14, and nothing at all in Dunlap, whose season ends in
+    week 12. Those are the games that decide whether you reach the
+    playoffs at all.
+
+    That is why the same four-game PUP absence costs 4/12 = 33% of a
+    Dunlap season against 4/14 = 29% of a Lebron James one, and why the
+    same player is honestly worth different amounts in the two leagues --
+    something the board has never had to express before.
+
+    Out-for-season players get zero expected games, which is the one place
+    Exp Pts and the ranking agree.
+    """
+    season = float(config.get("fantasy_season_length", 17))
+
+    expected_games = (
+        pl.when(pl.col("out_for_season"))
+        .then(pl.lit(0.0))
+        .otherwise(
+            (pl.lit(season) - pl.col("expected_games_missed")).clip(0.0, season)
+        )
+    )
+
+    return players.with_columns([
+        expected_games.alias("expected_games"),
+        (pl.col("adjusted_fantasy_points_per_game") * expected_games)
+        .alias("expected_total_points"),
+    ])
+
+
+# Phase 11. How each model feature reads in English on the board.
+#
+# `label` receives the player's raw feature value so a driver can carry the
+# number that caused it ("age 31" beats "age"), and the SIGN of the printed
+# contribution always comes from the arithmetic, never from the wording --
+# so a feature whose coefficient flips in a later refit relabels itself
+# correctly with no edit here.
+#
+# Note the two mean-reversion terms. `workload_share` and
+# `position_competition_ppg` both carry negative weights, which reads
+# backwards until you remember what the regression predicts: not PPG, but
+# the DELTA from a player's own trailing baseline. A back already holding
+# 60% of his backfield has his usage priced in and little room left to
+# grow; a receiver whose position group is otherwise weak has already
+# banked that. So the wording describes the situation, not a judgment.
+DRIVER_LABELS = {
+    "age": lambda v: f"age {v:.0f}",
+    "workload_share": lambda v: f"{v * 100:.0f}% team share",
+    "usage_trend_share": lambda v: f"role trend {v * 100:+.1f}pp/yr",
+    "trend_missing": lambda v: "thin usage history",
+    "qb_changed": lambda v: "new QB" if v else "same QB",
+    "team_changed": lambda v: "new team" if v else "same team",
+    "recent_major_injury": lambda v: "2025 IR" if v else "no 2025 IR",
+    "position_competition_ppg": lambda v: f"teammates {v:.1f} PPG",
+    "experience": lambda v: f"{v:.0f} yrs exp",
+    "continuity_score": lambda v: f"continuity {v:.2f}",
+}
+
+# A driver has to move the projection by at least this much to be worth a
+# reader's attention mid-draft. Below it the term is real but not
+# actionable, and printing four of them buries the one that matters.
+DRIVER_MIN_ABS = 0.15
+DRIVER_MAX_TERMS = 4
+
+
+def build_value_drivers(players, weights_by_position=None):
+    """
+    Phase 11. Adds `value_drivers`: a short signed list of what is pushing
+    a player's projection up or down, largest effect first.
+
+        "-1.4 62% team share · +0.9 role trend +3.1pp/yr · -0.5 age 30"
+
+    Each term is a real number out of the fitted model, not a description
+    of one:
+
+        contribution_f = (player_value_f - position_mean_f) x weight_f
+
+    so the terms are deviations from an AVERAGE player at that position,
+    and they sum -- with the position's base offset -- exactly to the Sit
+    Adj column beside them. That identity is the whole point. A "why"
+    column written by hand, or generated from a separate set of rules,
+    would eventually contradict the number it is explaining, and on draft
+    day you would have no way to tell which one was lying. This one cannot
+    drift: it is computed from the same JSON that computes the adjustment,
+    and verify_adjustments.py asserts the two reconcile.
+
+    Two housekeeping notes. Nulls are filled with the position mean, which
+    is what apply_situational_weights() does, so an imputed feature
+    contributes exactly 0 and correctly never appears as a driver -- "no
+    opinion" should not read as a reason. And the position base offset
+    (intercept plus the mean-value terms) is around -0.1 PPG at every
+    position, small enough to omit from the string unless it clears the
+    same threshold as everything else.
+
+    Rookies take no situational adjustment at all, so they say so rather
+    than showing an empty cell that looks like missing data.
+    """
+    if weights_by_position is None:
+        weights_by_position = load_situational_weights()
+
+    rows = players.to_dicts()
+    drivers = []
+
+    for row in rows:
+        if row.get("is_rookie"):
+            drivers.append("rookie — cohort baseline, no situational adj")
+            continue
+
+        spec = weights_by_position.get(row["position"])
+        if not spec:
+            # K/DST never reach here, and QB did until Phase 10.
+            drivers.append(None)
+            continue
+
+        means = spec.get("feature_means", {})
+        centers = spec.get("centers", {})
+
+        terms = []
+        base = float(spec["intercept"])
+        for feature, weight in spec["weights"].items():
+            mean = float(means.get(feature, 0.0))
+            center = float(centers.get(feature, 0.0))
+
+            # Same fill rule as apply_situational_weights(): a missing
+            # value means "average player," not zero.
+            raw = row.get(feature)
+            value = mean if raw is None else float(raw)
+
+            base += (mean - center) * weight
+            contribution = (value - mean) * weight
+            if abs(contribution) >= DRIVER_MIN_ABS:
+                label = DRIVER_LABELS.get(feature, lambda v, f=feature: f)(value)
+                terms.append((abs(contribution), f"{contribution:+.1f} {label}"))
+
+        if abs(base) >= DRIVER_MIN_ABS:
+            terms.append((abs(base), f"{base:+.1f} position base"))
+
+        terms.sort(key=lambda t: -t[0])
+        text = " · ".join(t[1] for t in terms[:DRIVER_MAX_TERMS])
+        if not text:
+            text = "average situation — no driver above ±0.1"
+
+        # Availability is not part of Sit Adj and must not look like it
+        # is, so it goes after a pipe rather than into the sum.
+        missed = row.get("expected_games_missed") or 0.0
+        if row.get("out_for_season"):
+            text += " | OUT for season"
+        elif missed > 0:
+            text += f" | {row.get('injury_status') or 'INJ'} −{missed:.0f} gm"
+
+        drivers.append(text)
+
+    return players.with_columns(pl.Series("value_drivers", drivers, dtype=pl.String))
+
+
+def compute_starter_ranks(config):
+    """
+    LEGACY (Phase 8 - Phase 10). How many players at each position get
+    drafted as STARTERS league-wide.
+
+    Superseded by compute_replacement_ranks() below, and retained only so
+    build_notes() can show both numbers -- the gap between them is the
+    single biggest change in v11 and hiding it would make the board's
+    movement inexplicable.
     """
     teams = config["num_teams"]
     slots = config["roster_slots"]
@@ -280,6 +538,100 @@ def compute_replacement_ranks(config):
         starters = teams * slots.get(position, 0)
         flex_share = teams * flex_slots * FLEX_SPLIT.get(position, 0.0)
         ranks[position] = round(starters + flex_share)
+    return ranks
+
+
+def compute_replacement_ranks(config, players):
+    """
+    Phase 11 CP6. How many players at each position come off the board
+    across the WHOLE draft. The next one down is replacement level: the
+    best player still sitting on waivers when the draft ends.
+
+    WHY THE OLD RULE WAS WRONG
+    --------------------------
+    Replacement used to be the last STARTER -- QB12 in a 12-team league,
+    which is defensible, but QB6 in a 6-team one, which is not. In a
+    6-team league QB7 through QB32 are all unowned, so the quarterback you
+    can have for nothing is a fine starting NFL quarterback, not the worst
+    rostered one. Setting replacement at QB6 measured every quarterback
+    against a bar almost nobody has to clear, and the board responded by
+    putting Josh Allen 5th overall in a league where you can stream the
+    position. The bug was invisible at 12 teams, where starter count and
+    waiver depth roughly agree; it only surfaced when a second league
+    forced the comparison.
+
+    The fix is to count picks, not starters. A 6-team 16-round draft is 96
+    picks, of which 12 go to kickers and defenses, leaving 84 for skill
+    positions -- against 168 in the 12-team league. Fewer picks means a
+    shallower cut into every position, which is the actual mechanism by
+    which a shallow league makes waivers rich.
+
+    HOW THE 84 GET SPLIT
+    --------------------
+    By observed draft behavior: the position mix of the first N players in
+    ADP order, out-for-season players removed since nobody spends a pick
+    on them. This is the plan's "expected players drafted per position"
+    and it is the one place ADP earns its keep -- it is the only evidence
+    the project has about what drafters actually do, and it enters through
+    replacement level rather than through any player's projection, so the
+    statistics-only rule on `adjusted_fantasy_points_per_game` holds.
+
+    KNOWN LIMITATION, stated plainly: FFC's ADP comes from 12-team mocks,
+    so the mix of its first 84 picks is a 12-team drafter's mix, not a
+    6-team drafter's. A 6-team room, facing no scarcity at all, would
+    almost certainly take FEWER than the 8 quarterbacks this yields. The
+    error therefore runs in the conservative direction -- it understates
+    how far QB should fall -- and a league can override the split outright
+    with an `expected_drafted` block in its config if you ever have real
+    draft results to fit.
+
+    Sanity condition from the plan: the 6-team board must push QB and TE
+    DOWN relative to the 12-team board. It does. Josh Allen goes from 7th
+    to 15th on Dunlap while rising to 7th on Lebron James, and the
+    quarterbacks inside the top 30 go 4 -> 1 on the shallow board and
+    1 -> 4 on the deep one.
+    """
+    override = config.get("expected_drafted")
+    if override:
+        return {p: int(override[p]) for p in MODELED_POSITIONS if p in override}
+
+    teams = config["num_teams"]
+    rounds = config["total_rounds"]
+    skill_picks = teams * rounds - teams * UNMODELED_SLOTS_PER_TEAM
+
+    # Draft order = ADP order. Out-for-season players are dropped: they
+    # consume no pick, so leaving them in would push replacement one slot
+    # shallower at their position for no reason.
+    drafted = (
+        players
+        .filter(pl.col("has_adp") & ~pl.col("out_for_season"))
+        .sort("adp", nulls_last=True)
+        .head(skill_picks)
+    )
+
+    counts = dict(
+        drafted.group_by("position").len().iter_rows()
+    )
+    ranks = {p: int(counts.get(p, 0)) for p in MODELED_POSITIONS}
+
+    # If the ADP feed is shorter than the draft (it currently runs ~201
+    # players deep against 168 skill picks in the 12-team league, so this
+    # is headroom, not a live problem), scale the observed shares up to
+    # the full pick count rather than silently setting replacement too
+    # shallow -- which would inflate every VOR on the board.
+    observed = sum(ranks.values())
+    if observed and observed < skill_picks:
+        scale = skill_picks / observed
+        print(f"NOTE: ADP covers {observed} of {skill_picks} skill picks -- "
+              f"scaling observed position shares by {scale:.2f}x.")
+        ranks = {p: max(1, round(n * scale)) for p, n in ranks.items()}
+
+    # A position must have at least as many drafted as there are starting
+    # slots; otherwise replacement lands above a player somebody has to
+    # start. Only bites on a feed with almost no ADP data.
+    floors = compute_starter_ranks(config)
+    ranks = {p: max(ranks[p], floors.get(p, 1)) for p in ranks}
+
     return ranks
 
 
@@ -455,15 +807,56 @@ def compute_draft_targets(players, teams):
     ])
 
 
-def build_notes(replacement_ranks, teams, rounds):
+def build_notes(replacement_ranks, teams, rounds, config=None, starter_ranks=None):
     """The explanatory block at the top of the sheet. It lives here so the
     board always ships with an accurate description of how it was built."""
-    levels = " / ".join(f"{p}{r}" for p, r in replacement_ranks.items())
+    order = [p for p in MODELED_POSITIONS if p in replacement_ranks]
+    levels = " / ".join(f"{p}{replacement_ranks[p]}" for p in order)
+
+    season = (config or {}).get("fantasy_season_length")
+    weeks = (config or {}).get("regular_season_weeks")
+
+    replacement_note = ""
+    if starter_ranks:
+        old = " / ".join(f"{p}{starter_ranks[p]}" for p in order
+                         if p in starter_ranks)
+        replacement_note = (
+            f"CHANGED IN v11: replacement level used to be the last STARTER ({old}) and is now "
+            f"the last player DRAFTED ({levels}) -- {teams * rounds} picks minus "
+            f"{teams * UNMODELED_SLOTS_PER_TEAM} for K/DST, split by the position mix of that "
+            "many players in ADP order. The old rule was defensible at 12 teams and wrong at 6: "
+            "it set replacement at QB6 in a league where QB7 through QB32 are all on waivers, so "
+            "the board was telling you to spend an early pick on a quarterback you could stream. "
+            "Every VOR on this sheet is larger than it was in v10 because the bar moved down; "
+            "what matters is that it moved down FURTHER at RB and WR than at QB and TE.\n"
+        )
+
+    availability_note = ""
+    if season:
+        window = f"weeks {weeks[0]}-{weeks[1]}" if weeks else f"{season:g} weeks"
+        availability_note = (
+            f"Exp Gm / Exp Pts = availability, deliberately kept OUT of Rank and VOR. Exp Gm is "
+            f"this league's REGULAR season ({window}, {season:g} games) minus known PUP/NFI "
+            "absence; Exp Pts is Adj PPG x Exp Gm. The denominator is the regular season, not "
+            "the 17-week NFL calendar, because games after your league's final are worth nothing. "
+            "A four-game PUP absence therefore costs a different share here than in a league with "
+            "a different schedule, which is why the same player can be worth more in one of your "
+            "two leagues than the other. Adj PPG stays a pure per-game rate: an injury makes a "
+            "player play fewer games, not play worse in the ones he plays.\n"
+        )
+
     return (
         "Rank/VOR = who's best by the stats-only model. VOR = points per game above that "
         f"position's replacement level ({levels}), which is why a 26-PPG quarterback does not "
         "outrank a 20-PPG receiver -- in a 1-QB league the gap over the freely available "
         "alternative is what a pick actually buys.\n"
+        + replacement_note
+        + availability_note
+        + "Why (value drivers) = what moved him off an AVERAGE player at his position, biggest "
+        "effect first, in points per game. These are the actual terms of the fitted model, not a "
+        "description of it: they sum to the Sit Adj column beside them. '62% team share' reading "
+        "negative is not a typo -- the model predicts the CHANGE from a player's own trailing "
+        "baseline, and a back already holding most of his backfield has that usage priced in.\n"
         "Draft Target = when to actually take him. For bargains (Value Δ >= 0) it is real ADP "
         "minus a one-standard-deviation cushion (his own adp_stdev), so you wait as late as you "
         "safely can rather than reaching to pure value. For players the market likes MORE than "
@@ -518,7 +911,8 @@ def adp_caveat(teams, source_teams=12):
     )
 
 
-def write_workbook(board, replacement_ranks, config, output_path, build_note=None):
+def write_workbook(board, replacement_ranks, config, output_path, build_note=None,
+                   starter_ranks=None):
     """Writes the formatted sheet. Values only -- no formulas, since every
     number here is a model output that would be wrong if a user edited a
     cell and Excel recalculated something downstream from it."""
@@ -546,7 +940,7 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
     # Notes block
     ws.merge_cells(f"A2:{last_col}6")
     notes = ws["A2"]
-    notes.value = build_notes(replacement_ranks, teams, rounds)
+    notes.value = build_notes(replacement_ranks, teams, rounds, config, starter_ranks)
     notes.font = Font(name=FONT_NAME, size=9, color="555555")
     notes.alignment = Alignment(wrap_text=True, vertical="top")
 
@@ -590,6 +984,9 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
             row["adjusted_fantasy_points_per_game"],
             row.get("situational_adjustment"),
             row["vor"],
+            row.get("expected_games"),
+            row.get("expected_total_points"),
+            row.get("value_drivers"),
             row["draft_target"],
             row["team"],
             row["adp"] if has_adp else None,
@@ -611,36 +1008,49 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
             row.get("injury_note"),  # Notes -- override note, else blank for draft day
         ]
 
+        # Left-align the text columns; everything else centers.
+        left_aligned = {
+            COLUMN_INDEX["Player"],
+            COLUMN_INDEX["Why (value drivers)"],
+            COLUMN_INDEX["Notes (manual)"],
+        }
         for i, value in enumerate(values, start=1):
             cell = ws.cell(r, i, value)
             cell.fill = fill
             cell.font = Font(name=FONT_NAME, size=11)
             cell.alignment = Alignment(
-                horizontal="left" if i in (3, n_cols) else "center"
+                horizontal="left" if i in left_aligned else "center"
             )
 
-        # Column indices below are 1-based positions in COLUMNS. Adding the
-        # "ADP (Ovr)" column at position 9 shifted everything after it right
-        # by one -- if you insert another column, these all move again.
-        ws.cell(r, 4).number_format = "0.0"
-        ws.cell(r, 5).number_format = "+0.0;-0.0;0.0"
-        ws.cell(r, 6).number_format = "0.0"
-        ws.cell(r, 9).number_format = "0.0"       # ADP (Ovr)
-        ws.cell(r, 11).number_format = "+0;-0;0"  # Value Δ
-        ws.cell(r, 17).number_format = "0.0"      # Age
-        ws.cell(r, 18).number_format = "+0.0;-0.0;0.0"  # Usage Trend (pp/season)
+        # Looked up by NAME, not position. Phase 11 adds three columns and
+        # the old hardcoded indices would all have shifted silently -- the
+        # number format is cosmetic, so nothing would have failed loudly.
+        for label, fmt in (
+            ("Adj PPG", "0.0"),
+            ("Sit Adj", "+0.0;-0.0;0.0"),
+            ("VOR", "0.0"),
+            ("Exp Gm", "0.0"),
+            ("Exp Pts", "0"),
+            ("ADP (Ovr)", "0.0"),
+            ("Value Δ (picks)", "+0;-0;0"),
+            ("Age", "0.0"),
+            ("Usage Trend", "+0.0;-0.0;0.0"),
+        ):
+            ws.cell(r, COLUMN_INDEX[label]).number_format = fmt
 
         # "Has ADP" is kept for filtering but rendered invisible -- white
         # text on the row fill -- so it doesn't add visual noise.
-        ws.cell(r, 12).font = Font(name=FONT_NAME, size=11, color="FFFFFF")
+        ws.cell(r, COLUMN_INDEX["Has ADP"]).font = Font(
+            name=FONT_NAME, size=11, color="FFFFFF"
+        )
 
         if out_for_season:
-            for i in (3, 7, 15):  # Player, Draft Target, Recent Injury
-                cell = ws.cell(r, i)
+            for label in ("Player", "Draft Target", "Recent Injury"):
+                cell = ws.cell(r, COLUMN_INDEX[label])
                 cell.fill = PatternFill("solid", start_color=INJURY_FILL)
                 cell.font = Font(name=FONT_NAME, size=11, color="FFFFFF", bold=True)
         elif row["recent_major_injury"]:
-            injury = ws.cell(r, 15)
+            injury = ws.cell(r, COLUMN_INDEX["Recent Injury"])
             injury.fill = PatternFill("solid", start_color=INJURY_FILL)
             injury.font = Font(name=FONT_NAME, size=11, color="FFFFFF", bold=True)
 
@@ -711,9 +1121,13 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
         )
 
     players = apply_injury_overrides(players)
+    players = compute_expected_points(players, config)
+    players = build_value_drivers(players)
 
-    replacement_ranks = compute_replacement_ranks(config)
-    print(f"Replacement ranks: {replacement_ranks}")
+    starter_ranks = compute_starter_ranks(config)
+    replacement_ranks = compute_replacement_ranks(config, players)
+    print(f"Replacement ranks: {replacement_ranks} "
+          f"(was, by starter slots: {starter_ranks})")
 
     board = compute_vor(players, replacement_ranks)
     board = compute_draft_targets(board, teams)
@@ -721,7 +1135,8 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
     if output_path is None:
         output_path = PROJECT_ROOT / f"2026_{league_slug(config)}_Board_v{version}.xlsx"
 
-    written = write_workbook(board, replacement_ranks, config, output_path, build_note)
+    written = write_workbook(board, replacement_ranks, config, output_path, build_note,
+                             starter_ranks=starter_ranks)
     history_count = len(read_build_history(written))
     print(f"Wrote {board.height} players to {written}")
     print(f"{config['league_name']} — {teams} teams, model v{version}, "

@@ -1,22 +1,22 @@
-player_name,status,note
-Ricky Pearsall,OUT_SEASON,Out for the season (2026 preseason)
-Patrick Mahomes,QUESTIONABLE,Questionable (2026 preseason)
-George Kittle,PUP,Recovering from torn Achilles (2026 preseason)
-Zach Charbonnet,PUP,Recovering from torn ACL (2026 preseason)
-Malik Nabers,QUESTIONABLE,Limited in camp returning from torn ACL (2026 preseason)
-Chris Brazzell II,OUT_SEASON,Left LCL injury out for the season (2026 preseason)
-De'Von Achane,QUESTIONABLE,Recovering from offseason shoulder surgery (2026 preseason)
-Cam Skattebo,QUESTIONABLE,Recovering from ankle dislocation and fracture (2026 preseason)
-Thomas Fidone II,PUP,Placed on physically unable to perform list (2026 preseason)
-Sam LaPorta,CLEARED,Fully cleared for training camp after recovering from back surgery
-Tucker Kraft,CLEARED,Activated off PUP list; limited early in camp
-Tua Tagovailoa,QUESTIONABLE,Back injury; expected to return sooner rather than later
-Michael Penix Jr.,QUESTIONABLE,Recovering from knee injury; held out of full team drills
-Tank Dell,CLEARED,Cleared for training camp after missing 2025
-Ladd McConkey,CLEARED,Expects to be full go after spring hamstring injury
-Marvin Harrison Jr.,QUESTIONABLE,Dealing with training camp cramps
-Jaylin Noel,NFI,Short-term undisclosed injury; placed on non-football injury list
-Jordyn Tyson,QUESTIONABLE,Hamstring issues being monitored early in camp
-Alec Pierce,NFI,Recovering from offseason ankle surgery (2026 preseason)
-Daniel Jones,QUESTIONABLE,Working back from right Achilles surgery; cleared for 7-on-7 (2026 preseason)
-Isaac Guerendo,PUP,Placed on PUP list with pectoral injury (2026 preseason)
+player_name,status,note,games_missed
+Ricky Pearsall,OUT_SEASON,Out for the season (2026 preseason),
+Patrick Mahomes,QUESTIONABLE,Questionable (2026 preseason),
+George Kittle,PUP,Recovering from torn Achilles (2026 preseason),
+Zach Charbonnet,PUP,Recovering from torn ACL (2026 preseason),
+Malik Nabers,QUESTIONABLE,Limited in camp returning from torn ACL (2026 preseason),
+Chris Brazzell II,OUT_SEASON,Left LCL injury out for the season (2026 preseason),
+De'Von Achane,QUESTIONABLE,Recovering from offseason shoulder surgery (2026 preseason),
+Cam Skattebo,QUESTIONABLE,Recovering from ankle dislocation and fracture (2026 preseason),
+Thomas Fidone II,PUP,Placed on physically unable to perform list (2026 preseason),
+Sam LaPorta,CLEARED,Fully cleared for training camp after recovering from back surgery,
+Tucker Kraft,CLEARED,Activated off PUP list; limited early in camp,
+Tua Tagovailoa,QUESTIONABLE,Back injury; expected to return sooner rather than later,
+Michael Penix Jr.,QUESTIONABLE,Recovering from knee injury; held out of full team drills,
+Tank Dell,CLEARED,Cleared for training camp after missing 2025,
+Ladd McConkey,CLEARED,Expects to be full go after spring hamstring injury,
+Marvin Harrison Jr.,QUESTIONABLE,Dealing with training camp cramps,
+Jaylin Noel,NFI,Short-term undisclosed injury; placed on non-football injury list,
+Jordyn Tyson,QUESTIONABLE,Hamstring issues being monitored early in camp,
+Alec Pierce,NFI,Recovering from offseason ankle surgery (2026 preseason),
+Daniel Jones,QUESTIONABLE,Working back from right Achilles surgery; cleared for 7-on-7 (2026 preseason),
+Isaac Guerendo,PUP,Placed on PUP list with pectoral injury (2026 preseason),

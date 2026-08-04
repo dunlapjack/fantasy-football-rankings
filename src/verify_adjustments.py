@@ -296,6 +296,143 @@ def check_live_board(check, positions):
         )
 
 
+def check_value_drivers(check):
+    """
+    Phase 11. The "Why (value drivers)" column claims to be the model's own
+    arithmetic rather than a description of it. This is that claim, tested.
+
+    The board prints only drivers above a display threshold, so the visible
+    string does NOT sum to Sit Adj -- that would be a false test. What must
+    hold is the identity underneath it: position base plus EVERY
+    contribution equals the adjustment the model actually applied. If that
+    breaks, the column is explaining a number that isn't there, which is
+    worse than having no column at all.
+    """
+    print("\n4. VALUE DRIVERS  --  do the printed reasons sum to the number?")
+
+    from src.build_board import build_value_drivers  # noqa: PLC0415
+    from src.ranking import load_situational_weights  # noqa: PLC0415
+
+    if not PLAYER_FEATURES_PATH.exists():
+        check.soft(False, "player_features.csv exists", "run `python -m src.pipeline`")
+        return
+
+    weights = load_situational_weights()
+    df = pl.read_csv(PLAYER_FEATURES_PATH).filter(
+        pl.col("position").is_in(list(weights.keys()))
+    ).with_columns(
+        pl.col("is_rookie").cast(pl.String).str.to_lowercase().eq("true")
+    )
+
+    worst_name, worst_gap = None, 0.0
+    for row in df.filter(~pl.col("is_rookie")).to_dicts():
+        spec = weights[row["position"]]
+        means = spec.get("feature_means", {})
+        centers = spec.get("centers", {})
+
+        total = float(spec["intercept"])
+        for feature, weight in spec["weights"].items():
+            mean = float(means.get(feature, 0.0))
+            raw = row.get(feature)
+            value = mean if raw is None else float(raw)
+            total += (value - float(centers.get(feature, 0.0))) * weight
+
+        gap = abs(total - float(row["situational_adjustment"]))
+        if gap > worst_gap:
+            worst_name, worst_gap = row["player_name"], gap
+
+    check.hard(
+        worst_gap < 1e-6,
+        "driver decomposition reconciles to situational_adjustment",
+        f"worst gap {worst_gap:.2e}" + (f" ({worst_name})" if worst_name else ""),
+    )
+
+    # And the column actually gets produced for everyone.
+    built = build_value_drivers(
+        df.with_columns([
+            pl.lit(False).alias("out_for_season"),
+            pl.lit(0.0).alias("expected_games_missed"),
+            pl.lit(None, dtype=pl.String).alias("injury_status"),
+        ]),
+        weights,
+    )
+    missing = built.filter(pl.col("value_drivers").is_null()).height
+    check.hard(missing == 0, "every modeled player gets a driver string",
+               f"{missing} null")
+
+    sample = built.filter(~pl.col("is_rookie")).sort(
+        pl.col("situational_adjustment").abs(), descending=True
+    ).head(5)
+    print()
+    for row in sample.select(["player_name", "position", "situational_adjustment",
+                              "value_drivers"]).iter_rows():
+        print(f"   {row[0]:<22}{row[1]:<4}{row[2]:+6.2f}  {row[3]}")
+
+
+def check_replacement_levels(check):
+    """
+    Phase 11 CP6/CP7. The sanity condition the plan wrote down before the
+    fix existed: a SHALLOWER league must push QB and TE DOWN the board, not
+    up. Deep leagues are where quarterback scarcity lives; in a 6-team
+    league the best free-agent QB is a perfectly good starter, so the gap a
+    pick buys you there is small.
+
+    Checked across both real configs rather than asserted about one, because
+    that is precisely how the bug stayed hidden -- it was invisible on the
+    12-team board, where starter count and waiver depth roughly agree.
+    """
+    print("\n5. REPLACEMENT LEVEL  --  does a shallow league discount QB and TE?")
+
+    from src.build_board import (  # noqa: PLC0415
+        MODELED_POSITIONS, apply_injury_overrides, compute_draft_targets,
+        compute_replacement_ranks, compute_starter_ranks, compute_vor, load_config,
+    )
+
+    configs = {
+        "Lebron James (12)": PROJECT_ROOT / "league_config.json",
+        "Dunlap Family (6)": PROJECT_ROOT / "league_config_dunlap.json",
+    }
+    if not all(path.exists() for path in configs.values()):
+        check.soft(False, "both league configs present")
+        return
+
+    best_rank = {}
+    for label, path in configs.items():
+        config = load_config(path)
+        players = pl.read_csv(PLAYER_FEATURES_PATH).filter(
+            pl.col("position").is_in(MODELED_POSITIONS)
+        )
+        for column in ["has_adp", "is_rookie", "recent_major_injury"]:
+            players = players.with_columns(
+                pl.col(column).cast(pl.String).str.to_lowercase().eq("true").alias(column)
+            )
+        players = apply_injury_overrides(players)
+
+        ranks = compute_replacement_ranks(config, players)
+        starters = compute_starter_ranks(config)
+        print(f"\n   {label}: drafted {ranks}  (starter-slot rule was {starters})")
+
+        board = compute_draft_targets(compute_vor(players, ranks), config["num_teams"])
+        top30 = board.head(30)
+        for position in MODELED_POSITIONS:
+            hit = top30.filter(pl.col("position") == position)
+            best_rank.setdefault(position, {})[label] = (
+                int(hit.select("rank").to_series()[0]) if hit.height else 999
+            )
+        counts = {p: top30.filter(pl.col("position") == p).height
+                  for p in MODELED_POSITIONS}
+        print(f"   top-30 mix: {counts}")
+
+    deep, shallow = list(configs.keys())
+    for position in ("QB", "TE"):
+        check.hard(
+            best_rank[position][shallow] >= best_rank[position][deep],
+            f"{position} ranks no higher in the 6-team league than the 12-team",
+            f"best {position}: rank {best_rank[position][deep]} deep, "
+            f"{best_rank[position][shallow]} shallow",
+        )
+
+
 def main():
     print("=" * 74)
     print("VERIFYING SITUATIONAL ADJUSTMENTS")
@@ -306,6 +443,8 @@ def main():
     if positions:
         check_reconciliation(check, positions)
         check_live_board(check, positions)
+        check_value_drivers(check)
+        check_replacement_levels(check)
 
     print("\n" + "=" * 74)
     if check.failures:

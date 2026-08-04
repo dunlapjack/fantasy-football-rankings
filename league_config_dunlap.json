@@ -1,11 +1,11 @@
 {
-    "league_name": "Lebron James",
-    "config_key": "lebron_james",
-    "num_teams": 12,
+    "league_name": "Dunlap Family Fantasy Football",
+    "config_key": "dunlap_family",
+    "num_teams": 6,
     "total_rounds": 16,
-    "regular_season_weeks": [1, 14],
-    "playoff_weeks": [15, 17],
-    "fantasy_season_length": 14,
+    "regular_season_weeks": [1, 12],
+    "playoff_weeks": [13, 14],
+    "fantasy_season_length": 12,
     "roster_slots": {
         "QB": 1,
         "RB": 2,
@@ -49,9 +49,5 @@
             "200-299": 2
         }
     },
-    "keeper_rule": {
-        "cost_if_drafted_last_year": "same round drafted",
-        "cost_if_kept_multiple_in_a_row": "round 1",
-        "cost_if_undrafted_last_year": "no pick lost"
-    }
+    "keeper_rule": null
 }

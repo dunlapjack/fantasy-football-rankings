@@ -31,6 +31,7 @@ import polars as pl
 
 from src.features import load_veteran_stats
 from src.team_codes import normalize_team_column
+from src.situational import load_playcaller_history as _load_playcaller_history
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLAYCALLER_PATH = PROJECT_ROOT / "playcaller_history.csv"
@@ -46,33 +47,17 @@ POSITIONS = ["QB", "RB", "WR", "TE"]
 
 def load_playcaller_history():
     """
-    Reads playcaller_history.csv defensively.
+    Playcaller history plus the sanity warnings this module wants.
 
-    infer_schema_length=0 forces every column to string on read. This file is
-    hand-maintained and has whitespace-padded values ("Head Coach  ", "True  ")
-    -- Polars' automatic boolean inference turns those into silent nulls rather
-    than erroring, which is exactly the trap that bit this project before.
-    Read raw, strip, then cast deliberately.
+    The read itself -- defensive string parsing, whitespace stripping,
+    team-code normalization, and the DERIVED changed_from_prior_year flag --
+    lives in situational.load_playcaller_history() so there is exactly one
+    definition of what this file means. Two readers drifting apart is how the
+    flag ended up defaulted to false for all of 2021 in the first place.
 
     Returns: season, team, playcaller, playcaller_role, changed_from_prior_year
     """
-    raw = pl.read_csv(PLAYCALLER_PATH, infer_schema_length=0)
-
-    cleaned = raw.with_columns(
-        [pl.col(c).str.strip_chars() for c in raw.columns]
-    ).with_columns([
-        pl.col("season").cast(pl.Int64),
-        (pl.col("changed_from_prior_year").str.to_lowercase() == "true")
-        .alias("changed_from_prior_year"),
-    ])
-
-    # The file has a blank separator line between each season block (lines 34,
-    # 67, 100, 133, 166) purely for readability. Polars reads those as all-null
-    # rows. Drop them before validating, or they masquerade as both "missing
-    # playcaller" and "duplicate team-season" errors.
-    cleaned = cleaned.filter(pl.col("season").is_not_null())
-
-    cleaned = normalize_team_column(cleaned)
+    cleaned = _load_playcaller_history()
 
     expected = 32
     per_season = (

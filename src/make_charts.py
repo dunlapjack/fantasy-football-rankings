@@ -208,9 +208,9 @@ def chart_age_curves(df):
         ax.legend(fontsize=6.5, loc="lower left")
     axes[0].set_ylabel("points per game vs. his own\nrecent form  (0 = held serve)")
     fig.suptitle("Aging: how far a player lands from his own recent form, by age\n"
-                 "One straight line fits well at every position. A steeper drop after 29 "
-                 "appeared on three seasons of data and vanished on five --\nit was a small "
-                 "sample, not a cliff.",
+                 "A straight line fits receivers and tight ends. Backs decline steeply "
+                 "through their twenties and then flatten --\nbut only 57 backs in the data "
+                 "are past 30, and those are the ones who lasted.",
                  fontsize=10.5, y=1.08)
     fig.tight_layout()
     fig.savefig(CHARTS_DIR / "age_curves.png", bbox_inches="tight")

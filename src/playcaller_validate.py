@@ -222,8 +222,18 @@ def player_relative_test(min_players_per_cell=3):
     Split-half across seasons: if a playcaller reliably lifts players above
     their baselines, his mean delta in one season should predict another.
 
-    Caveat worth keeping in view: backtest_features.csv only covers 2023-25, so
-    this is three seasons, not five. A null here is suggestive, not conclusive.
+    Caveat REMOVED Aug 4. This test originally ran on 2023-25 only, because
+    that was all backtest_features.csv covered, and Phase 9's cut was recorded
+    as "a decision made on suggestive evidence, not conclusive evidence" for
+    exactly that reason. The training window now covers 2021-25, so this reads
+    five seasons with no code change -- it simply consumes whatever
+    backtest_features.csv holds.
+
+    That matters because the widened window has already overturned two
+    small-sample conclusions (WR usage trend, cut at p=0.23, came back at
+    p=0.034; position_competition_ppg, cut at p=0.77, came back at p=0.04).
+    If this test still comes up empty on five seasons, the Phase 9 cut is
+    materially better evidenced than when it was made.
     """
     if not BACKTEST_PATH.exists():
         print(f"{BACKTEST_PATH.name} not found -- skipping player-relative test.")

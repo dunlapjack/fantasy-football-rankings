@@ -131,6 +131,17 @@ def check_weights_file(check):
             f"missing center: {uncentered}" if uncentered else "",
         )
 
+        # A suppressed level shift must be recorded, not just applied --
+        # otherwise a later reader sees an intercept that doesn't match
+        # the fit and has no way to tell deliberate from broken.
+        if spec.get("level_shift_removed"):
+            check.hard(
+                "intercept_fitted" in spec,
+                f"{position}: suppressed level shift records the fitted intercept",
+                f"ships {spec['intercept']:+.4f}, fitted "
+                f"{spec.get('intercept_fitted', float('nan')):+.4f}",
+            )
+
         flips = spec.get("sign_flips", [])
         check.soft(
             not flips,
@@ -183,7 +194,7 @@ def check_reconciliation(check, positions):
     df = load_backtest()
     weights = load_situational_weights()
 
-    print(f"\n   {'pos':<5}{'n':>6}{'mean applied':>15}{'mean delta':>14}{'gap':>13}")
+    print(f"\n   {'pos':<5}{'n':>6}{'mean applied':>15}{'expected':>14}{'gap':>13}  note")
     for position, features in FEATURE_SPECS.items():
         if position not in positions:
             continue
@@ -202,8 +213,20 @@ def check_reconciliation(check, positions):
 
         applied = scored.select(pl.col("situational_adjustment").mean()).item()
         actual = subset.select(pl.col("delta").mean()).item()
-        gap = applied - actual
-        print(f"   {position:<5}{subset.height:>6}{applied:>15.6f}{actual:>14.6f}{gap:>13.2e}")
+
+        # A position whose level shift was deliberately suppressed (see
+        # fit_weights.SUPPRESS_LEVEL_SHIFT) should reconcile to
+        # mean(delta) MINUS that shift, not to mean(delta). Checking the
+        # unadjusted identity here would fail QB for doing exactly what
+        # it was told to do -- and, worse, would tempt someone to
+        # loosen the tolerance, which is the one check in this file that
+        # must stay exact.
+        shift = float(positions[position].get("level_shift_removed", 0.0) or 0.0)
+        expected = actual - shift
+        gap = applied - expected
+        note = f"level shift {shift:+.3f} suppressed" if shift else ""
+        print(f"   {position:<5}{subset.height:>6}{applied:>15.6f}{expected:>14.6f}"
+              f"{gap:>13.2e}  {note}")
 
         check.hard(
             abs(gap) < RECONCILIATION_TOLERANCE,

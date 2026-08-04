@@ -15,6 +15,7 @@ from src.situational import (
     compute_experience,
     compute_age,
     compute_usage_trend,
+    PLAYCALLER_PATH,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -250,9 +251,19 @@ def build_backtest_season(target_season):
 # to influence.
 DEFAULT_TARGET_SEASONS = [2021, 2022, 2023, 2024, 2025]
 
-# Earliest season playcaller_history.csv covers. Targets before this
-# would silently lose coach_changed rather than fail loudly.
-EARLIEST_PLAYCALLER_SEASON = 2021
+
+def earliest_playcaller_season():
+    """
+    Earliest season playcaller_history.csv actually covers.
+
+    Read from the file rather than hardcoded, so extending the file is
+    the only step needed to unlock earlier target seasons -- there is no
+    second constant to remember. A stale constant here would either
+    block seasons that are now available or, worse, wave through seasons
+    that aren't.
+    """
+    history = pl.read_csv(PLAYCALLER_PATH)
+    return int(history.select(pl.col("season").min()).item())
 
 
 def build_backtest_dataset(target_seasons=None):
@@ -265,16 +276,17 @@ def build_backtest_dataset(target_seasons=None):
     if target_seasons is None:
         target_seasons = DEFAULT_TARGET_SEASONS
 
-    too_early = [s for s in target_seasons if s < EARLIEST_PLAYCALLER_SEASON]
+    earliest = earliest_playcaller_season()
+    too_early = [s for s in target_seasons if s < earliest]
     if too_early:
         raise ValueError(
             f"Target seasons {too_early} precede playcaller_history.csv, which "
-            f"starts at {EARLIEST_PLAYCALLER_SEASON}. compute_coach_continuity() "
-            f"would return no rows for them and every player in those seasons "
-            f"would silently get a null coach_changed -- a quiet hole in the "
-            f"training set rather than an error. Extend playcaller_history.csv "
-            f"first (Pro Football Reference has coordinator history), or drop "
-            f"those seasons."
+            f"starts at {earliest}. compute_coach_continuity() would return no "
+            f"rows for them and every player in those seasons would silently "
+            f"get a null coach_changed -- a quiet hole in the training set "
+            f"rather than an error. Extend playcaller_history.csv first "
+            f"(`python -m src.make_playcaller_template --seasons ...` writes a "
+            f"pre-filled skeleton), or drop those seasons."
         )
 
     tables = [build_backtest_season(s) for s in target_seasons]
@@ -286,7 +298,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--seasons", type=int, nargs="+", default=DEFAULT_TARGET_SEASONS,
         help=f"target seasons to train on (default: {DEFAULT_TARGET_SEASONS}). "
-             f"Cannot go earlier than {EARLIEST_PLAYCALLER_SEASON} without "
+             f"Cannot go earlier than one season after the start of "
+             f"playcaller_history.csv without "
              f"extending playcaller_history.csv.",
     )
     args = parser.parse_args()

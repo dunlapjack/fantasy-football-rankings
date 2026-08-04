@@ -152,14 +152,17 @@ pace — so the third variant was substituted to keep three genuinely distinct t
 | `usage_trend_volume` | +0.26 (p=0.003) | +0.23 (p=0.16) | +0.37 (p=0.061) |
 | `usage_trend_relative` | +1.45 (p=0.024) | +0.55 (p=0.31) | +1.22 (p=0.060) |
 
-**Revised after the training window widened (see below).** On 2021–2025 the shipped
-coefficients are RB **+5.68** (p=0.002), WR **+9.27** (p=0.034 in the full spec; the
-shipped value is from the refit after `trend_missing` was cut at WR), TE **+12.49**
-(p=0.010). WR was cut on three seasons and reinstated on five — the coefficient barely
-moved, the error bar shrank. Alpha was fixed at 0.10 beforehand and the test is
-unchanged, so this is a power gain rather than a search for a passing p-value. WR
-nonetheless sits far closer to the line than the other two and is the first
-coefficient that should fall if Phase 13 CP2's holdout disagrees.
+**Revised twice as the training window widened (see below).** Final, on 2017–2025:
+RB **+4.68** (p=0.0004), WR **+6.20** (p=0.075), TE **+14.16** (p=0.0001).
+
+WR is the cautionary one. Its p-value went **0.23 → 0.034 → 0.075** across the three
+training windows — cut on three seasons, reinstated on five, and back near the line on
+nine. Non-monotonic, and second-weakest at the largest sample. Alpha was fixed at 0.10
+beforehand and the test never changed, so nothing here is a search for a passing
+p-value; but a feature that oscillates around the bar is not behaving like RB and TE,
+which sit at p<0.001 and barely move. It ships because moving the bar after seeing a
+result is worse than shipping a marginal feature. **It is the first coefficient that
+should fall if Phase 13 CP2's holdout disagrees.**
 
 Trend does not need the `team_changed` null-out that `workload_share` requires: each
 season's share uses that season's own team, so a mid-window mover still gets an
@@ -173,6 +176,37 @@ estimate of +7.82. Explicit discount interactions tested p=0.57 (RB) and p=0.76 
 so no discount ships. Within the 2-season subgroup trend holds at p=0.0019 while age
 goes flat (p=0.55), so it is not merely a young-player proxy. `trend_low_confidence`
 is now a display flag only; the model term is `trend_missing`.
+
+### QB's first weight, and its first suppressed intercept (Aug 4)
+
+QB carried no weight from Phase 5 until now. On 2017–2025 (n=278 against 96 on three
+seasons) age lands at **−0.196 PPG per year, p=0.0014**, stable in all nine folds. The
+long-standing "nothing works for QB" result was partly a statement about sample size.
+
+The fitted intercept, however, is a **selection artifact and does not ship**. Mean delta
+by games threshold:
+
+| min games | QB | RB | WR | TE |
+|---|---|---|---|---|
+| 0+ | **−0.93** | −0.69 | −0.47 | −0.19 |
+| 8+ (`MIN_GAMES`) | **+0.70** | −0.08 | −0.07 | +0.12 |
+| 12+ | **+1.16** | +0.23 | +0.18 | +0.44 |
+
+QB swings from worst position to best as the filter tightens, roughly triple RB's
+movement, because quarterback is one-per-team: a mediocre receiver still plays eight
+games, a mediocre quarterback is benched. So +0.70 means "quarterbacks who keep their
+job beat their baseline" — unknowable on draft day. Applied uniformly it lifted every QB
+against every other position and put Josh Allen in the Lebron James top 10.
+
+`fit_weights.SUPPRESS_LEVEL_SHIFT` removes the level and keeps the slope: a 24-year-old
+QB still gets +1.04 and a 36-year-old −1.31, spread identical (sd 0.983 either way),
+ordering within the position untouched. The fitted value is preserved as
+`intercept_fitted` alongside `level_shift_removed`, and `verify_adjustments` checks the
+adjusted identity — otherwise it would fail QB for obeying instructions, and the fix
+would look like loosening the one tolerance that must stay exact.
+
+**Revisit in Phase 11.** Modelling games-available directly is the real fix; if that
+lands, this suppression must come back out or the two will double-count.
 
 **CP2 — Age curves.** `age` (from `birth_date`, as of Sept 1) replaces `experience`
 at all three positions, beating it on both adjusted R² and AIC everywhere. With both
@@ -227,25 +261,32 @@ a separate numpy/hand-rolled-t-distribution implementation — agreeing to four 
 places on every coefficient, including reproducing the shipped Phase 8 intercepts
 (3.5925 / 2.3653 / 1.5764) exactly.
 
-**The post-29 cliff was a small sample, and this is the cleanest lesson of the phase.**
-On three seasons the age slope appeared to steepen sharply past 29 — RB −0.687 under 29
-against −0.963 at 29+, WR −0.364 against −0.646 — and it was written up as a real
-non-linearity to carry into Phase 13. On five seasons it evaporates:
+**The aging shape changed with every data expansion, and that pattern is the lesson.**
+Three windows, three different answers:
 
-| | under 29 | 29 and over |
-|---|---|---|
-| RB | −0.465 | −0.355 (p=0.42, n=55) |
-| WR | −0.339 | −0.381 (p=0.013, n=135) |
-| TE | −0.180 | −0.074 (p=0.62, n=88) |
+| training window | what the age curve looked like |
+|---|---|
+| 3 seasons (947 rows) | steep cliff after 29 — RB −0.687 under 29 vs **−0.963** at 29+ |
+| 5 seasons (1,575) | no cliff; one straight line fits, quadratic dead (p=0.79–0.92) |
+| 9 seasons (2,775) | curved, in the **opposite** direction — RB −0.640 under 29, **+0.023** after |
 
-One straight line per position fits. Quadratic age remains dead on the larger sample
-too (p = 0.79 to 0.92). The original finding was 32 RBs and 89 WRs aged 29+ drawing a
-shape out of noise — and it was flagged at the time as having wide, overlapping CIs,
-which is exactly the caveat that turned out to be doing the work. **A wide confidence
-interval is not a weaker version of a finding; it is the finding saying it might be
-nothing.**
+The cliff was 32 RBs aged 29+ drawing a shape out of noise, and it was flagged at the
+time as having wide, overlapping CIs. That caveat turned out to be the whole story. **A
+wide confidence interval is not a weaker version of a finding; it is the finding saying
+it might be nothing.**
 
-### Training window widened to 2021–2025 (Aug 4)
+At nine seasons RB age-squared is significant inside the shipped spec (p=0.004, AIC
+−6.3): decline is front-loaded through the twenties and flat afterwards. It was **not
+adopted** — see Phase 13 CP1, which is already scoped for exactly this. Two reasons for
+holding. The flat tail rests on 57 backs over 30, and those are the ones who lasted,
+which is the same survivorship that forced the QB level-shift suppression below. And
+the steep young end likely overlaps `trend_missing`, which Phase 11 CP5 is re-testing
+anyway. WR and TE remain linear on all three windows.
+
+Every one of these answers was in-sample. Phase 13 CP2's holdout is the only test that
+does not move when data is added to it.
+
+### Training window widened to 2017–2025 (Aug 4)
 
 Prompted by asking whether more history was available. Two things called "3 years"
 were being conflated:
@@ -257,21 +298,65 @@ were being conflated:
   estimates what a coaching change or a year of age is *worth*, and those relationships
   do not go stale the way a player's form does. Small samples were the live constraint.
 
-`playcaller_history.csv` starts at 2021 and `compute_coach_continuity` reads the target
-season's own row, so 2021 and 2022 were already usable with no new manual research.
-Training rows went 947 → **1575**. `build_backtest_dataset` now raises on target
-seasons before `EARLIEST_PLAYCALLER_SEASON` rather than silently returning nulls for
+Done in two steps. 2021–2022 were already usable for free (`playcaller_history.csv`
+started at 2021 and `compute_coach_continuity` reads the target season's own row),
+taking 947 → 1,575 rows. Then the file was extended by hand back to 2016, unlocking
+2017 onward: **2,775 rows**, a 2.9× increase over where the phase started.
+
+`build_backtest_dataset` derives the earliest legal target season from the file itself
+rather than a constant, and raises rather than silently returning nulls for
 `coach_changed`.
 
-What moved: WR usage trend passed (above), the post-29 cliff disappeared (above), RB's
-age slope softened from −0.359 to −0.242, and `trend_missing` at RB weakened from
-+1.546 (p=0.014) to +1.022 (p=0.037). R² fell at RB (0.236 → 0.171) and TE (0.133 →
-0.119), which is what in-sample R² does when it stops having room to overfit. No
-coefficient flips sign across any of the five leave-one-season-out folds. The
-2-season-slope discount was retested and still isn't warranted (p=0.53 RB, 0.50 TE).
+**Re-testing every previously-cut feature became mandatory, not optional.** A cut means
+"no evidence found," and evidence is what sample size buys — so cuts are what a wider
+window threatens, while kept features merely get refit. The sweep reinstated
+`position_competition_ppg` (cut in Phase 6 at p=0.77; now p=0.0023 RB / p=0.0009 TE,
+stable in all nine folds) and gave QB its first weight in the project's history.
+`returning_oline_starters` also cleared 0.10, at TE only, and was **not** adopted — no
+reason it should help tight ends and not backs, which is what a false positive looks
+like. Roughly thirty tests were run; at alpha=0.10 about three should pass on luck
+alone, so both adoptions were required to have had a stated football rationale in
+advance.
 
-Going earlier than 2021 requires extending `playcaller_history.csv` by hand. Worth
-costing before Phase 12, whose rookie model has the thinnest sample in the project.
+What moved across the whole expansion: WR usage trend passed then half-failed (above);
+the age curve changed shape twice (above); `trend_missing` at RB decayed from +1.546
+(p=0.014) to +0.651 (p=0.076) as more data arrived; `continuity_score` collapsed and
+was replaced by `qb_changed` (below). R² fell at RB (0.236 → 0.185) — what in-sample R²
+does when it stops having room to overfit. No coefficient flips sign in any of the nine
+folds. The 2-season-slope discount was retested twice and is still unwarranted.
+
+**A hand-maintained file's first season cannot be trusted.** Extending the file exposed
+that `changed_from_prior_year` had been defaulted to `false` for 31 of 32 teams in
+2021 — there was no 2020 row to derive it from. Harmless while training started in
+2023, and instantly a fifth of the training set once 2021 became a target. The column
+is now derived from the playcaller names rather than typed, which makes the error
+structurally impossible. Deriving it immediately surfaced a second bug: the
+year-over-year lookup has to follow the *franchise*, not the abbreviation, or the
+Chargers (SD→LAC, 2017) and Raiders (OAK→LV, 2020) silently produce null flags. See
+`team_codes.FRANCHISE_PREDECESSORS`.
+
+Going earlier than 2016 requires more hand research. Worth costing before Phase 12,
+whose rookie model still has the thinnest sample in the project — though it now has 9
+draft classes rather than 5.
+
+### Phase 9 re-tested on the wider window — CUT STANDS (Aug 4)
+
+The Phase 9 cut was recorded as resting on "suggestive evidence, not conclusive," because
+`backtest_features.csv` only reached back to 2023. Re-run with no code changes:
+
+- **Movers test** (does the effect travel with a coach who changes teams?) — negative at
+  all four positions again: QB −0.17, RB −0.12, WR −0.13, TE −0.41.
+- **Player-relative split-half**, the better-specified design and the one the plan called
+  the more damaging null — RB +0.016, WR −0.026, TE −0.026 on 174 pairs rather than a
+  handful. Not a small effect; nothing.
+- **Predictive test** — playcaller history adds 0.004–0.026 R² over the team's own prior
+  season, with the two predictors correlated 0.61–0.75.
+
+The decision rule (positive movers test AND real gain in test 3 or 4) fails on the first
+clause. Worth stating why more data cannot rescue this, unlike WR usage trend: a coach
+who keeps his job is measured on one roster, so "playcaller" and "team" are nearly the
+same variable. That is a confound, not a power problem, and no sample size separates
+them.
 
 ### Phase 11 — Baseline confidence, injuries, and PUP (Aug 8–12)
 
@@ -399,18 +484,27 @@ situational adjustment at all.
   multicollinearity — usage trend, workload share, and age will correlate.
   **Already measured in Phase 10 and it is a non-issue:** corr(workload_share, trend)
   is +0.109 / +0.064 / +0.111 at RB / WR / TE, and corr(workload_share, age) tops out
-  at +0.255. Leave-one-season-out flips no shipped coefficient's sign across five folds.
-  The age non-linearity that was flagged here has since been withdrawn — it did not
-  survive the wider training window (see Phase 10). Nothing outstanding for this
-  checkpoint beyond the refit itself.
+  at +0.255. Leave-one-season-out flips no shipped coefficient's sign across nine folds.
+
+  **Carried here deliberately: RB age-squared.** Significant on 2017–2025 inside the
+  shipped spec (p=0.004, AIC −6.3), describing front-loaded decline that flattens after
+  29. Not adopted in Phase 10 because its flat tail rests on 57 backs over 30 — the same
+  survivorship that forced the QB level-shift suppression — and its steep young end
+  likely overlaps `trend_missing`. Test it here *after* Phase 11 has settled
+  availability and shrinkage, and let CP2's holdout arbitrate. Note the aging shape has
+  now changed with every data expansion (cliff → straight → front-loaded), so treat any
+  in-sample verdict on it with suspicion.
 - **CP2** — Holdout validation: fit on 2023–24, test on 2025. Does the model beat the
   raw baseline out of sample? If not, the added features are overfitting and should be
   cut. This is the honest test the project hasn't run yet. **Not cut for time.**
-- **CP3** — Retest `coach_changed`. Phase 9 found it moves mean delta by 0.1–0.4 PPG
-  against sds of 2.5–7.1. It ships today inside `continuity_score` on the strength of
-  Phase 3 reasoning, never a significance test. Same bar as everything else: keep it
-  only if it earns its slot. If it goes, `continuity_score` becomes `qb_changed` alone
-  and should be renamed rather than silently redefined.
+- **CP3** — **ANSWERED EARLY (Aug 4). `coach_changed` did not earn its slot.** Once the
+  window reached nine seasons and 2021's flags were derived rather than defaulted,
+  `continuity_score` fell to p=0.059, and splitting it showed why: `qb_changed` carries
+  it (−0.498, p=0.080 at RB) while `coach_changed` contributes p=0.36 noise at RB,
+  nothing at TE, and at WR comes out *positive* at p=0.082 — a coaching change helping
+  receivers, which is not a finding. RB now uses `qb_changed` alone, renamed rather than
+  silently redefined, per this checkpoint's own instruction. Nothing left to do here
+  beyond confirming it survives the CP2 holdout.
 - **CP4** — Build both boards from one model run. Naming convention changes here:
   `2026_DunlapFamily_Board_v9.xlsx` and `2026_LebronJames_Board_v9.xlsx`. Version
   tracks the *model*, bumping when weights or features change — so a pure data refresh
@@ -506,6 +600,18 @@ different rebuilds with no way to tell them apart.
 - **A coefficient is only valid over the population it was fitted on.** Before shipping,
   compare the fit sample's feature distribution against the live pool's. `trend_missing`
   was fitted on RBs averaging 24.5 years old and is applied to a pool averaging 27.2.
+- **`MIN_GAMES` is a selection rule, and selection rules bite unevenly by position.**
+  Check any intercept by re-computing mean delta at several game thresholds. If it moves
+  a lot more for one position than the others, that intercept is describing who survived
+  the filter, not the position. QB moved +1.63 across the thresholds against RB's +0.60.
+- **When a cut feature is re-tested on more data, the whole set of cuts must be
+  re-tested.** Cheap to do, and re-testing only the one you happen to remember is
+  selection by a different name. Re-testing everything then requires a multiple-comparison
+  discount: prefer reinstatements that had a stated rationale before the sweep ran.
+- **A hand-maintained file's earliest season is unverifiable by construction.** Anything
+  derived from a prior year cannot exist for the first row, and defaulting it rather than
+  nulling it hides that. Prefer deriving such fields; where that's impossible, make the
+  earliest season raise rather than quietly pass.
 - **Dead things get deleted at the end of each phase** (revised Aug 4, replacing
   "nothing gets deleted without approval"). The original rule existed to guard against
   losing something irrecoverably. Now that the repo is pushed, that risk is mostly

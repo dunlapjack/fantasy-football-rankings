@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 import polars as pl
 import nflreadpy as nfl
-from src.team_codes import normalize_team_column
+from src.team_codes import normalize_team_column, franchise_key_column
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLAYCALLER_PATH = PROJECT_ROOT / "playcaller_history.csv"
@@ -100,29 +100,104 @@ def compute_qb_continuity(seasons, upcoming_season=UPCOMING_SEASON):
     return combined.select(["team", "qb_changed"])
 
 
+def load_playcaller_history():
+    """
+    Canonical reader for playcaller_history.csv, including the DERIVED
+    `changed_from_prior_year` flag.
+
+    WHY THE FLAG IS DERIVED (Aug 4)
+    -------------------------------
+    It used to be a hand-typed column, and that produced a silent,
+    systematic error: 2021 was the file's first season, so there was no
+    2020 row to compare against, and 31 of 32 teams were left at `false`
+    by default. That cost nothing while the training set started at 2023
+    -- the flag is read for the TARGET season only, so 2021's value was
+    never used. The moment the window widened to 2021-2025 it
+    contaminated a fifth of the training data, and nothing would have
+    flagged it.
+
+    The flag is a pure function of the playcaller column: it is true
+    when this season's playcaller differs from the same team's
+    playcaller last season. Deriving it makes that class of error
+    structurally impossible and removes a field from the hand-maintained
+    surface. The earliest season in the file necessarily has a null flag
+    -- there is nothing before it to compare to, which is the honest
+    answer rather than a defaulted `false`.
+
+    infer_schema_length=0 forces every column to string on read. This
+    file is hand-maintained and has whitespace-padded values ("Head
+    Coach  "); Polars' automatic inference turns those into silent nulls
+    rather than erroring, which is the trap that bit this project in
+    Phase 2. Read raw, strip, then cast deliberately.
+
+    Returns: season, team, playcaller, playcaller_role,
+    changed_from_prior_year
+    """
+    raw = pl.read_csv(PLAYCALLER_PATH, infer_schema_length=0)
+
+    cleaned = raw.with_columns(
+        [pl.col(c).str.strip_chars() for c in raw.columns]
+    ).with_columns(pl.col("season").cast(pl.Int64))
+
+    # Blank separator lines between season blocks read as all-null rows.
+    cleaned = cleaned.filter(pl.col("season").is_not_null())
+    cleaned = normalize_team_column(cleaned)
+
+    # The prior-season lookup follows the FRANCHISE, not the
+    # abbreviation. San Diego's 2016 row is "SD" and the Chargers' 2017
+    # row is "LAC"; joining on the code alone finds nothing and returns
+    # a null flag, which is how 2017 and 2020 came out 31 of 32 teams
+    # instead of 32 when this was first derived.
+    keyed = franchise_key_column(cleaned)
+
+    prior = keyed.select([
+        (pl.col("season") + 1).alias("season"),
+        "franchise",
+        pl.col("playcaller").alias("_prior_playcaller"),
+    ])
+
+    return keyed.join(prior, on=["season", "franchise"], how="left").with_columns(
+        pl.when(pl.col("_prior_playcaller").is_null())
+        .then(None)
+        .otherwise(pl.col("playcaller") != pl.col("_prior_playcaller"))
+        .alias("changed_from_prior_year")
+    ).drop(["_prior_playcaller", "franchise"])
+
+
 def compute_coach_continuity(upcoming_season=UPCOMING_SEASON):
     """
-    Reads playcaller_history.csv and returns whether each team's
-    playcaller changed entering the upcoming season, using the
-    manually-maintained changed_from_prior_year flag for that season's
-    row specifically (not last season's row).
+    Whether each team's playcaller changed entering the upcoming season.
+
+    Reads the flag for THAT season's row specifically, not last
+    season's. The flag is derived in load_playcaller_history() -- see
+    the note there on why it stopped being hand-maintained.
+
     Returns: team, coach_changed
     """
-    playcallers = pl.read_csv(PLAYCALLER_PATH)
-    playcallers = normalize_team_column(playcallers)
-    coach_change = (
-        playcallers.filter(pl.col("season") == upcoming_season)
-        .select(["team", "changed_from_prior_year"])
-        .with_columns(
-            pl.col("changed_from_prior_year")
-            .cast(pl.String)
-            .str.to_lowercase()
-            .eq("true")
-            .alias("coach_changed")
+    playcallers = load_playcaller_history()
+
+    season_rows = playcallers.filter(pl.col("season") == upcoming_season)
+    if season_rows.height == 0:
+        raise ValueError(
+            f"playcaller_history.csv has no rows for season {upcoming_season}. "
+            f"Every team would get a null coach_changed via the left join "
+            f"downstream -- a silent hole, not an error. Covered seasons: "
+            f"{sorted(playcallers.select('season').unique().to_series().to_list())}"
         )
-        .select(["team", "coach_changed"])
-    )
-    return coach_change
+
+    unknown = season_rows.filter(pl.col("changed_from_prior_year").is_null()).height
+    if unknown:
+        raise ValueError(
+            f"Season {upcoming_season} is the earliest in playcaller_history.csv, "
+            f"so changed_from_prior_year cannot be derived for its {unknown} teams "
+            f"-- there is no prior season to compare against. Use a later target "
+            f"season, or extend the file back one more year."
+        )
+
+    return season_rows.select([
+        "team",
+        pl.col("changed_from_prior_year").alias("coach_changed"),
+    ])
 
 
 def compute_continuity_score(seasons, upcoming_season=UPCOMING_SEASON):

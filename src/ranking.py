@@ -87,9 +87,16 @@ def apply_situational_weights(player_features, weights_by_position=None):
     workload_share is deliberately nulled out (everyone who changed
     teams; see situational.py).
 
-    Positions absent from the weights dict -- currently QB, K, DST --
-    pass through with zero adjustment. For QB that is a real finding:
-    nothing tested significant across every Phase 5-6 specification.
+    Positions absent from the weights dict -- currently K and DST --
+    pass through with zero adjustment.
+
+    QB was in that list from Phase 5 until Phase 10, when widening the
+    training window to 2021-2025 finally gave it enough
+    quarterback-seasons for age to register (-0.19 PPG per year,
+    p=0.020, n=157 against 96 before). It is the only QB weight; every
+    other candidate is still dead on the wider sample. Worth
+    remembering that the long-standing "nothing works for QB" result was
+    partly a statement about sample size, not only about quarterbacks.
 
     Rookies (`is_rookie`) still take no adjustment. Every weight was
     estimated from veteran deltas against a player's OWN history, and a

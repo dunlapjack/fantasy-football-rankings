@@ -107,18 +107,53 @@ ALPHA = 0.10
 # mean-imputed -- imputing without a missing indicator invents data. It
 # is listed at all three positions and lets alpha decide: it survives at
 # RB (p=0.037) and is cut at WR (p=0.18) and TE (p=0.73).
+#
+# `position_competition_ppg` is a REINSTATEMENT. Phase 6 cut it at
+# p=0.77 on three seasons; on five it returns at p=0.044 (RB) and
+# p=0.035 (TE), negative both times -- better teammates at your position
+# means fewer touches for you, which is what anyone would have guessed.
+# WR stays out (p=0.17).
+#
+# ON MULTIPLE TESTING, since this feature and the QB entry below both
+# came out of a sweep: re-running every previously-cut feature was
+# roughly thirty tests, and at alpha=0.10 about three should clear the
+# bar on luck alone. That makes "p < 0.10" weaker evidence here than
+# when one pre-specified feature is tested. Both reinstatements below
+# had a stated football reason to expect them BEFORE the sweep ran --
+# competition for touches, and age already mattering everywhere else.
+# `returning_oline_starters` also cleared the bar, at TE only (p=0.069),
+# with no reason it should help tight ends and not backs or receivers.
+# That is what a false positive looks like, and it was left out. Every
+# reinstatement is on notice for Phase 13 CP2's holdout.
+#
+# `continuity_score` was RETIRED at RB in favour of `qb_changed` alone.
+# On 9 seasons -- and with 2021's coach flags finally derived rather
+# than defaulted to false -- the summed feature fell to p=0.059, and
+# splitting it showed why: qb_changed carries it (-0.488, p=0.087) while
+# coach_changed contributes noise (-0.256, p=0.36 at RB; nothing at TE;
+# and at WR it comes out POSITIVE at p=0.082, i.e. a coaching change
+# helping receivers, which is not a finding). This is Phase 13 CP3's
+# question, answered early because the wider window forced it. Renamed
+# rather than silently redefined, per the plan's own instruction.
 FEATURE_SPECS = {
-    "RB": ["continuity_score", "workload_share", "age", "usage_trend_share", "trend_missing"],
+    "RB": ["qb_changed", "workload_share", "age", "usage_trend_share",
+           "trend_missing", "position_competition_ppg"],
     "WR": ["team_changed", "workload_share", "recent_major_injury", "age",
            "usage_trend_share", "trend_missing"],
-    "TE": ["workload_share", "age", "usage_trend_share", "trend_missing"],
-    # QB deliberately absent: nothing tested significant across every
-    # specification tried in Phase 5-6, and Phase 10 retested it with
-    # age -- the one genuinely new input QB had never seen -- at p=0.68
-    # linear and p=0.52 quadratic. An empty entry here would write an
-    # intercept-only model, which would shift every QB by a constant and
-    # change nothing about their relative order. QBs pass through
-    # unadjusted in ranking.py instead.
+    "TE": ["workload_share", "age", "usage_trend_share", "trend_missing",
+           "position_competition_ppg"],
+    # QB carries a weight for the first time in the project's history.
+    #
+    # Phases 5 and 6 found nothing across every specification tried, and
+    # Phase 10 initially retested with age on three seasons at p=0.68.
+    # On five seasons (n=157 vs 96) age lands at -0.19 PPG per year,
+    # p=0.020. The effect was always there; there were not enough
+    # quarterback-seasons to see it -- the same story as WR usage trend.
+    #
+    # Age only. Everything else retested on the wider sample is still
+    # dead: qb_changed p=0.14, coach_changed p=0.94, team pace p=0.38,
+    # o-line p=0.65, injury p=0.84, team_changed p=0.79.
+    "QB": ["age"],
 }
 
 # Features entered as deviations from the position mean. The mean is
@@ -129,6 +164,36 @@ CENTERED_FEATURES = {"age"}
 # the row to be dropped. Only for features with a paired missing
 # indicator in the spec -- otherwise imputation quietly invents data.
 IMPUTED_FEATURES = {"usage_trend_share"}
+
+# Positions whose fitted intercept is a SELECTION artifact rather than a
+# fact about the position, and so ships as a relative adjustment only.
+#
+# QB is the case. MIN_GAMES=8 filters far harder here than anywhere
+# else, because quarterback is one-per-team: a mediocre receiver still
+# plays eight games, a mediocre quarterback gets benched. Mean delta by
+# games threshold makes it plain --
+#
+#   min games      QB      RB      WR      TE
+#          0+   -0.93   -0.69   -0.47   -0.19
+#          8+   +0.70   -0.08   -0.07   +0.12
+#         12+   +1.16   +0.23   +0.18   +0.44
+#
+# QB swings from the worst position to the best as the filter tightens,
+# roughly triple RB's movement. So +0.70 does not mean "quarterbacks beat
+# their baseline"; it means "quarterbacks who keep their job beat their
+# baseline," and on draft day you do not know which those are. Applied
+# uniformly it lifts every QB against every other position and changes
+# cross-position VOR -- it put Josh Allen in the top 10.
+#
+# The age SLOPE is unaffected by this: it is estimated within the
+# sample and is stable across all nine leave-one-season-out folds
+# (-0.15 to -0.23). Only the level is contaminated. So the level is
+# removed and the ordering kept.
+#
+# The honest fix is a proper games-available model, which is Phase 11.
+# Revisit this set then; if availability is modelled directly, the
+# suppression should come back out rather than double-counting.
+SUPPRESS_LEVEL_SHIFT = {"QB"}
 
 BOOL_COLUMNS = [
     "qb_changed", "coach_changed", "team_changed",
@@ -277,8 +342,19 @@ def fit_position(df, position, features, alpha=ALPHA):
         if any(np.sign(fold[f]) != np.sign(weights[f]) for fold in stability.values())
     ]
 
+    # A suppressed level shift shifts the whole position by a constant,
+    # so it changes nothing about the order WITHIN the position and
+    # everything about where the position sits against the others.
+    # Recorded explicitly rather than folded into the intercept, so the
+    # fitted value stays visible and verify_adjustments can check the
+    # right identity.
+    level_shift_removed = float(np.mean(y)) if position in SUPPRESS_LEVEL_SHIFT else 0.0
+    shipped_intercept = intercept - level_shift_removed
+
     result = {
-        "intercept": intercept,
+        "intercept": shipped_intercept,
+        "intercept_fitted": intercept,
+        "level_shift_removed": level_shift_removed,
         "weights": weights,
         "feature_means": feature_means,
         "centers": centers,
@@ -304,7 +380,7 @@ def fit_position(df, position, features, alpha=ALPHA):
         "mean_fitted_adjustment": (
             float(np.mean(refit_model.fittedvalues)) if refit_model is not None
             else float(np.mean(y))
-        ),
+        ) - level_shift_removed,
         "mean_actual_delta": float(np.mean(y)),
     }
     return result, full_model, refit_model
@@ -335,10 +411,18 @@ def print_summary(position, result, full_model, features):
         print(f"  {f:<24} {d['coef_full_spec']:>10.4f} {full_model.bse[i + 1]:>10.4f} "
               f"{d['p_value']:>8.4f}   {mark:<6} {shipped:>9}")
 
-    gap = result["mean_fitted_adjustment"] - result["mean_actual_delta"]
-    print(f"\n  mean fitted adjustment {result['mean_fitted_adjustment']:+.4f}  "
-          f"vs mean actual delta {result['mean_actual_delta']:+.4f}   "
-          f"gap {gap:+.6f}")
+    shift = result["level_shift_removed"]
+    expected = result["mean_actual_delta"] - shift
+    gap = result["mean_fitted_adjustment"] - expected
+    if shift:
+        print(f"\n  LEVEL SHIFT SUPPRESSED: fitted intercept {result['intercept_fitted']:+.4f} "
+              f"ships as {result['intercept']:+.4f}")
+        print(f"  ({shift:+.4f} removed as a selection artifact of MIN_GAMES={MIN_GAMES} -- "
+              f"see SUPPRESS_LEVEL_SHIFT.")
+        print(f"   Ordering within {position} is unchanged; {position} no longer floats "
+              f"against other positions.)")
+    print(f"\n  mean applied adjustment {result['mean_fitted_adjustment']:+.4f}  "
+          f"vs expected {expected:+.4f}   gap {gap:+.6f}")
     if abs(gap) > 1e-6:
         print("  *** RECONCILIATION FAILED -- shipped weights do not match the fit ***")
 

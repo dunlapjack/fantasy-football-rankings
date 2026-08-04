@@ -109,14 +109,34 @@ def apply_situational_weights(player_features, weights_by_position=None):
     for position, spec in weights_by_position.items():
         position_adjustment = pl.lit(float(spec["intercept"]))
         feature_means = spec.get("feature_means", {})
+        centers = spec.get("centers", {})
 
         for feature, weight in spec["weights"].items():
             # Booleans arrive from CSV as true/false strings or as bools
             # depending on the read path; cast through Float64 so either
             # works and the arithmetic below is well-defined.
             value = pl.col(feature).cast(pl.Float64)
+
             fill_value = feature_means.get(feature, 0.0)
-            position_adjustment = position_adjustment + value.fill_null(fill_value) * weight
+            value = value.fill_null(fill_value)
+
+            # Centered features were fitted as deviations from the
+            # position mean, so they must be shifted by the SAME center
+            # before the coefficient means anything. Applying a centered
+            # age coefficient to a raw age is wrong by coef x center --
+            # about -9.5 PPG for RB, which would dwarf every real
+            # adjustment in the model. This is the Phase 6 intercept bug
+            # in a different costume, which is why the center ships
+            # inside the same JSON object as the weight rather than
+            # living as a constant anywhere in this file.
+            #
+            # Order matters: fill first, then center. Filling with the
+            # raw mean and then centering yields exactly 0 -- "no
+            # opinion" -- which is the intended fallback.
+            if feature in centers:
+                value = value - float(centers[feature])
+
+            position_adjustment = position_adjustment + value * weight
 
         adjustment = (
             pl.when(pl.col("position") == position)

@@ -61,7 +61,7 @@ games-available problem sharper — and to Phase 13, restoring its full original
 |---|---|---|
 | 8 — Intercept fix | Aug 2–4 | **complete** (Aug 2, `048b7cd`) |
 | 9 — Playcaller position-PPG | Aug 5–9 | **cut** (Aug 3) |
-| 10 — Usage trend and age curves | Aug 10–14 | Aug 3–7 |
+| 10 — Usage trend and age curves | Aug 10–14 | **complete** (Aug 4) |
 | 11 — Confidence, injuries, PUP | Aug 15–18 | Aug 8–12 |
 | 12 — Rookie-specific model | Aug 19–23 | Aug 13–16 |
 | 13 — Full refit and validation | Aug 24–27 | Aug 17–20 |
@@ -136,16 +136,96 @@ if a future offseason has time.
 `continuity_score` moves mean delta by 0.1–0.4 PPG against standard deviations of
 2.5–7.1. It may not earn its slot either. Retested as part of the Phase 13 refit.
 
-### Phase 10 — Usage trend and age curves (Aug 3–7)
+### Phase 10 — Usage trend and age curves — COMPLETE (Aug 4)
 
-Two features that are currently too blunt.
+Both features tested; both shipped, though not everywhere. Model v10.
 
-- **CP1** — *Usage trend*: slope of target share / carry share across the last 3
-  seasons. `workload_share` sees a 22% share; it can't tell rising from falling.
-- **CP2** — *Age curves*: replace linear `experience` with position-specific age
-  terms. One linear slope across RB and WR is almost certainly wrong — RB decline is
-  steeper and starts earlier. Test quadratic or binned age against the current term.
-- **CP3** — Backtest both, keep what's significant.
+**CP1 — Usage trend.** Three bases were tested rather than assuming one:
+share-of-team-volume, raw per-game volume, and share-slope-over-mean-share. Share
+won cleanly. (Note that "share of team volume" and "same basis as `workload_share`"
+turned out to be the same thing — `compute_workload_share` already divides by team
+pace — so the third variant was substituted to keep three genuinely distinct tests.)
+
+| | RB | WR | TE |
+|---|---|---|---|
+| `usage_trend_share` | **+6.98** (p=0.002) | +6.54 (p=0.23) | **+16.79** (p=0.008) |
+| `usage_trend_volume` | +0.26 (p=0.003) | +0.23 (p=0.16) | +0.37 (p=0.061) |
+| `usage_trend_relative` | +1.45 (p=0.024) | +0.55 (p=0.31) | +1.22 (p=0.060) |
+
+Ships at RB and TE. **Cut at WR** (p=0.23, and p=0.96 on 3-season-only players) but
+retained as a board column — the same reference-only treatment ADP gets.
+
+Trend does not need the `team_changed` null-out that `workload_share` requires: each
+season's share uses that season's own team, so a mid-window mover still gets an
+apples-to-apples slope. No David Montgomery problem.
+
+**The low-confidence assumption was backwards.** The plan assumed 2-season slopes
+would need discounting. The signal is *carried* by them: RB trend is p=0.0013 with
+2-season players included and p=0.259 on 3-season-only. That is a power artifact, not
+a contradiction — the 3-season 95% CI is [−3.43, +12.86], which contains the 2-season
+estimate of +7.82. Explicit discount interactions tested p=0.57 (RB) and p=0.76 (TE),
+so no discount ships. Within the 2-season subgroup trend holds at p=0.0019 while age
+goes flat (p=0.55), so it is not merely a young-player proxy. `trend_low_confidence`
+is now a display flag only; the model term is `trend_missing`.
+
+**CP2 — Age curves.** `age` (from `birth_date`, as of Sept 1) replaces `experience`
+at all three positions, beating it on both adjusted R² and AIC everywhere. With both
+terms in the model experience goes insignificant at every position (p = 0.38 to 0.85)
+while age holds. Quadratic age is dead (p = 0.71 to 0.94). Binned age was competitive
+only at TE and non-monotonic there — the middle bin came in *positive* — which is
+noise, not a curve.
+
+The plan predicted RB decline would be steeper than WR. In the controls-only
+comparison it is (−0.535 vs −0.398), but once trend enters the RB slope falls to
+−0.359. **Part of what the model has been calling RB age decline is declining usage.**
+
+QB was retested with age — the one genuinely new input it had never seen — at p=0.68
+linear and p=0.52 quadratic. QB remains unadjusted. That is now a null confirmed
+across three phases.
+
+**CP3 — Refit and rebuild.** RB and WR keep every term; TE drops `trend_missing`
+(p=0.85). Both boards rebuilt at v10. Top-30 movement is modest and legible: largest
+top-30 moves are Ashton Jeanty +18, Tucker Kraft +15, Bucky Irving +8 (trend +19.5 pp
+per season). The largest moves anywhere are veterans whose usage collapsed — Nick
+Chubb −222 (trend −26.3), Austin Ekeler −322 on the Dunlap board (trend −29.7).
+
+**Three bugs found while verifying, not while building.** All three are the Phase 6
+error in different costumes — a coefficient separated from the constants it was
+fitted with. None would have been visible reading the spreadsheet.
+
+1. **`drop_nulls` would have deleted a non-random 209 rows.** `usage_trend_share` is
+   null for players under two usable seasons, and `fit_position` dropped those rows.
+   Those rows have mean delta **+0.97 against −0.79** for the rest, so dropping them
+   would have pushed every intercept down for a non-statistical reason. Now
+   mean-imputed with a `trend_missing` indicator.
+2. **Centering had to travel with the coefficient.** `age` enters centered at the
+   position mean. Applying a centered coefficient to raw age is wrong by
+   `coef × center` — **−9.48 PPG on every RB**, a uniform shift, precisely the Phase 6
+   signature. Centers now ship inside the same JSON object as the weights.
+3. **The intercept came from a different model than the slopes.** `fit_position` fit
+   the full spec, kept the significant subset, and shipped the *full* model's
+   intercept alongside them. It never bit because Phase 8 dropped nothing; TE's
+   `trend_missing` is the first real drop. Survivors are now refit and that refit's
+   intercept ships. Measured bias was small here (+0.019 PPG) only because the dropped
+   coefficient was small — it scales with whatever gets cut next.
+
+`src/verify_adjustments.py` now gates all three. It runs the real apply path over the
+fit sample and asserts `mean(adjustment) == mean(delta)`, an OLS identity that holds
+for any correct fit and breaks under all three variants. Phase 6's gap was −3.43 at
+RB; current gaps are ~1e-16. It also checks two-sidedness, that every weight has both
+a feature mean and a center, and that the weights file is not older than the CSV it
+claims to describe.
+
+**Cross-checked independently.** The whole bake-off was run twice — statsmodels, and
+a separate numpy/hand-rolled-t-distribution implementation — agreeing to four decimal
+places on every coefficient, including reproducing the shipped Phase 8 intercepts
+(3.5925 / 2.3653 / 1.5764) exactly.
+
+**Known non-linearity, carried to Phase 13 CP1.** The age slope steepens past 29 at
+RB (−0.687 under 29 vs −0.963 at 29+) and WR (−0.364 vs −0.646). CIs are wide and
+overlap the pooled estimate, and quadratic age tested dead, so linear ships — but the
+linear term is *conservative* on old players, not aggressive, which is the opposite of
+the concern that prompted the check. Worth one more look during the full refit.
 
 ### Phase 11 — Baseline confidence, injuries, and PUP (Aug 8–12)
 
@@ -187,6 +267,31 @@ anything downstream. This needs a separate signal.
 - **CP4** — Add a games-played confidence measure for veterans; surface it on the board.
 - **CP5** — Test shrinking low-sample baselines toward the position mean, with the
   shrinkage strength backtested rather than picked by feel.
+
+  **MANDATORY: re-test `trend_missing` jointly with shrinkage. Do not fit one without
+  the other.** Phase 10 shipped `trend_missing` at RB (+1.546, p=0.014) knowing it
+  overlaps this checkpoint, and the overlap is not hypothetical — it lands on exactly
+  the players this phase was written about:
+
+  | Player | Baseline PPG | `trend_missing` bonus | Already flagged in CP4/B as |
+  |---|---|---|---|
+  | Phil Mafah | 10.90 | +1.55 | "projects 13.4 PPG on a single game" |
+  | Omarion Hampton | 15.08 | +1.55 | "ranks 18th on 9 games" |
+  | Cam Skattebo | 15.96 | +1.55 | "ranks 11th on 8 games" |
+
+  A player with too little history to fit a usage slope is usually a player with too
+  little history to trust the baseline of. Phase 10 pays him for the first; Phase 11
+  proposes to charge him for the second. Fit them together or the board double-counts.
+
+  **Second, narrower problem: the coefficient is being applied off its support.**
+  `trend_missing` was estimated on RBs averaging 24.5 years old, only 2% of them 29+.
+  The live pool it is applied to averages 27.2 with **24% aged 29+** — because a
+  washed-up 34-year-old also fails to clear `MIN_TREND_GAMES` in any recent season, and
+  collects the same +1.55 meant for ascending youngsters. Currently harmless: of the 12
+  `trend_missing` RBs with a baseline at or above 8 PPG, exactly one (Darrell Henderson,
+  29.0) is 29+, so the mismatch sits in the undraftable tail. It stops being harmless the
+  moment shrinkage moves those players. Either interact `trend_missing` with age or
+  restrict it by age at fit time.
 
 **C. Replacement level in shallow leagues.** Found while verifying the first v9 boards.
 `compute_replacement_ranks()` sets replacement at the last *starter* — QB12 in a
@@ -246,6 +351,12 @@ situational adjustment at all.
 
 - **CP1** — Refit all positions with the surviving feature set. Check for
   multicollinearity — usage trend, workload share, and age will correlate.
+  **Already measured in Phase 10 and it is a non-issue:** corr(workload_share, trend)
+  is +0.109 / +0.064 / +0.111 at RB / WR / TE, and corr(workload_share, age) tops out
+  at +0.255. Leave-one-season-out flips no shipped coefficient's sign. The open item
+  here is not collinearity but the age non-linearity noted under Phase 10 — the slope
+  steepens past 29 at RB and WR while a quadratic term tests dead, which suggests the
+  curvature is real but not quadratic.
 - **CP2** — Holdout validation: fit on 2023–24, test on 2025. Does the model beat the
   raw baseline out of sample? If not, the added features are overfitting and should be
   cut. This is the honest test the project hasn't run yet. **Not cut for time.**
@@ -334,6 +445,21 @@ different rebuilds with no way to tell them apart.
   model since Phase 3 without a significance test. Phase 13 CP3 fixes that. Age of a
   feature is not evidence for it.
 - **Intercepts always ship with coefficients.** Never transcribe one without the other.
+- **Generalized (Phase 10): every constant a coefficient was fitted with travels with
+  it.** The intercept was the first instance, not the only one. Centering constants are
+  the second — a centered age coefficient applied to raw age is off by 9.5 PPG. And a
+  coefficient must ship with the intercept *from its own model*: filtering a spec by
+  p-value and keeping the unfiltered intercept silently mixes two fits. Anything the fit
+  computed and the application needs belongs in the same serialized object, never in a
+  constant in the apply-side file.
+- **Verify by identity, not by eyeball.** Phase 6's bug survived because its symptoms
+  were impressions ("everything looks negative"). `mean(adjustment) == mean(delta)` is
+  an algebraic identity under OLS-with-intercept, so it either holds to floating point
+  or the applied numbers didn't come from the fitted model. Prefer checks that can only
+  pass for one reason.
+- **A coefficient is only valid over the population it was fitted on.** Before shipping,
+  compare the fit sample's feature distribution against the live pool's. `trend_missing`
+  was fitted on RBs averaging 24.5 years old and is applied to a pool averaging 27.2.
 - **Dead things get deleted at the end of each phase** (revised Aug 4, replacing
   "nothing gets deleted without approval"). The original rule existed to guard against
   losing something irrecoverably. Now that the repo is pushed, that risk is mostly
@@ -358,6 +484,16 @@ different rebuilds with no way to tell them apart.
 ## Open items carried forward
 
 - Null `player_id` rows in `player_stats` — flagged in Phase 2, still uninvestigated.
+- **Retired players carry a live `latest_team`.** Phase 10's age column made this
+  visible: the pool contains a 41-year-old WR and a 42-year-old TE, 4–6 players per
+  position past the fit sample's age range. They rank nowhere near draftable so nothing
+  is at stake today, but they inflate every pool-level mean the model is checked
+  against, and they are the reason the live age distribution sits above the fitted one.
+- **`experience` is now dead as a model input** but still computed in `situational.py`,
+  shipped in `player_features.csv`, and referenced by `ranking.py`'s
+  `LEGACY_SITUATIONAL_WEIGHTS` fallback. Under the delete-dead-things rule it is a
+  removal candidate; it survives Phase 10 only because the legacy fallback would break.
+  Decide during Phase 13, when the fallback itself is worth reconsidering.
 - K and DST are not modeled at all. Acceptable (draft them last), but it should be a
   decision rather than an omission.
 - No holdout validation has ever been run. Phase 13 CP2 is the first. Every R² quoted

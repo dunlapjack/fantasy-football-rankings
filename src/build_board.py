@@ -60,7 +60,11 @@ CONFIG_PATH = PROJECT_ROOT / "league_config.json"
 # same model version are told apart by the Build History sheet, not by the
 # filename, which is what keeps one file per league instead of a pile of
 # near-identical spreadsheets.
-MODEL_VERSION = 9
+# Phase 10 (Aug 4): 9 -> 10. This one is an honest bump, unlike the 8 -> 9
+# documented in PHASE_8_PLAN.md. Features changed (age replaced experience;
+# usage_trend_share added at RB and TE) and all three positions were refit,
+# so ranks move for real.
+MODEL_VERSION = 10
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -99,6 +103,19 @@ COLUMNS = [
     ("VOR", 8), ("Draft Target", 24), ("Team", 7), ("ADP (Ovr)", 10),
     ("ADP (Rd.Pk)", 12), ("Value Δ (picks)", 12), ("Has ADP", 4), ("Bye", 6),
     ("Rook", 6), ("Recent Injury", 12), ("GP (sample)", 11),
+    # Phase 10. Age is now a model input at RB/WR/TE (it replaced
+    # `experience`, which it beat at every position). Usage Trend is a
+    # model input at RB/TE only -- it failed at WR (p=0.23) and is cut
+    # there, but still prints for all three so a rising or falling WR is
+    # visible at the table. Reading it as signal for WR is exactly the
+    # mistake the p-value warns about.
+    #
+    # "Trend n" is how many seasons the slope was fitted on. 3 is a full
+    # slope, 2 is a two-point slope, 0 means none could be fitted and the
+    # player was mean-imputed. Worth showing rather than hiding: the
+    # trend signal turned out to be CARRIED by the n=2 players, not
+    # weakened by them.
+    ("Age", 6), ("Usage Trend", 11), ("Trend n", 8),
     ("Notes (manual)", 45),
 ]
 
@@ -585,6 +602,13 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
             ("OUT (2026)" if out_for_season
              else ("INJURED" if row["recent_major_injury"] else None)),
             row["games_played"],
+            row.get("age"),
+            # Stored as a share-per-season slope (0.021 = +2.1 points of
+            # team share per year); rendered in percentage points, which
+            # is the unit the number is actually legible in.
+            (row.get("usage_trend_share") * 100.0
+             if row.get("usage_trend_share") is not None else None),
+            row.get("trend_seasons_used"),
             row.get("injury_note"),  # Notes -- override note, else blank for draft day
         ]
 
@@ -604,6 +628,8 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
         ws.cell(r, 6).number_format = "0.0"
         ws.cell(r, 9).number_format = "0.0"       # ADP (Ovr)
         ws.cell(r, 11).number_format = "+0;-0;0"  # Value Δ
+        ws.cell(r, 17).number_format = "0.0"      # Age
+        ws.cell(r, 18).number_format = "+0.0;-0.0;0.0"  # Usage Trend (pp/season)
 
         # "Has ADP" is kept for filtering but rendered invisible -- white
         # text on the row fill -- so it doesn't add visual noise.

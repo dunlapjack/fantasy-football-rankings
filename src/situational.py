@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 import polars as pl
 import nflreadpy as nfl
@@ -8,6 +9,23 @@ PLAYCALLER_PATH = PROJECT_ROOT / "playcaller_history.csv"
 
 OL_POSITIONS = ["C", "G", "T", "OL"]
 UPCOMING_SEASON = 2026
+
+# --- Phase 10 CP1: usage trend -------------------------------------------
+# Positions with a meaningful opportunity share. QB is excluded for the
+# same reason it is in workload_share.
+TREND_POSITIONS = ["RB", "WR", "TE"]
+
+# A season must have at least this many games to contribute a point to
+# the slope. Below it you are measuring an injury, not a role.
+MIN_TREND_GAMES = 4
+
+# Seasons needed to fit any slope at all. Below this the trend columns
+# are null and `trend_missing` fires.
+MIN_TREND_SEASONS_MODEL = 2
+
+# Mean share below which usage_trend_relative is nulled -- dividing a
+# slope by a near-zero denominator manufactures huge numbers from noise.
+RELATIVE_TREND_FLOOR = 0.02
 
 
 def compute_team_tendency(seasons):
@@ -283,6 +301,273 @@ def compute_experience(target_season):
         (pl.lit(target_season) - pl.col("rookie_season")).alias("experience")
     ).select(["player_id", "experience"])
 
+def compute_age(target_season, as_of=(9, 1)):
+    """
+    Player age in years as of Sept 1 of target_season, from
+    load_players()'s birth_date.
+
+    WHY THIS EXISTS ALONGSIDE compute_experience()
+    ----------------------------------------------
+    `experience` (season - rookie_season) is an aging PROXY. It can't
+    tell a 24-year-old fourth-year back from a 27-year-old one, and
+    those are not the same asset. Phase 6's experience coefficient is
+    the term memory flags as over-penalizing established veterans
+    (Kamara took the largest negative adjustment in the drafted pool),
+    so it's worth knowing whether the penalty is really about age or
+    really about seasons logged. Phase 10 CP2 fits both and keeps
+    whichever wins; this function only supplies the input.
+
+    birth_date is a static biographical field, so -- exactly like
+    rookie_season -- reading it from the CURRENT load_players() snapshot
+    is valid for a historical target_season too. Nothing about a
+    player's birthday gets revised after the fact. (This is NOT true of
+    latest_team, which is why compute_live_team_changed exists
+    separately.)
+
+    Returns: player_id, age
+    """
+    players = nfl.load_players()
+    if "birth_date" not in players.columns:
+        raise KeyError(
+            "load_players() has no 'birth_date' column -- available: "
+            f"{sorted(players.columns)}. Phase 10 CP2 needs it; if nflreadpy "
+            "renamed the field, update compute_age() rather than falling back "
+            "to experience silently."
+        )
+
+    players = players.select([pl.col("gsis_id").alias("player_id"), "birth_date"])
+
+    # birth_date arrives as either a Date or an ISO string depending on
+    # the nflreadpy version. Handle both; strict=False so a malformed
+    # value becomes null rather than killing the whole pipeline.
+    if players.schema["birth_date"] == pl.Utf8:
+        players = players.with_columns(
+            pl.col("birth_date").str.strptime(pl.Date, "%Y-%m-%d", strict=False)
+        )
+    else:
+        players = players.with_columns(pl.col("birth_date").cast(pl.Date, strict=False))
+
+    reference = date(target_season, as_of[0], as_of[1])
+
+    return players.with_columns(
+        ((pl.lit(reference) - pl.col("birth_date")).dt.total_days() / 365.25).alias("age")
+    ).with_columns(
+        # Guard against junk birthdates producing a 3-year-old or a
+        # 60-year-old running back. Out-of-range becomes null, which
+        # fit_weights imputes to the position mean.
+        pl.when(pl.col("age").is_between(18.0, 50.0))
+        .then(pl.col("age"))
+        .otherwise(None)
+        .alias("age")
+    ).select(["player_id", "age"])
+
+
+def _ols_slope(xs, ys):
+    """
+    Least-squares slope of ys on xs. Two points give the plain
+    difference, which is what OLS reduces to at n=2 -- that's the
+    intended behavior, not an accident, but it IS why
+    trend_low_confidence exists.
+    """
+    n = len(xs)
+    if n < 2:
+        return None
+    x_mean = sum(xs) / n
+    y_mean = sum(ys) / n
+    sxx = sum((x - x_mean) ** 2 for x in xs)
+    if sxx == 0:
+        return None
+    sxy = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+    return sxy / sxx
+
+
+def _load_season_usage(seasons):
+    """
+    Per-player, per-season usage plus that season's team pace, which is
+    what every trend variant below is built from.
+
+    Deliberately does NOT go through features.load_veteran_stats():
+    that function scores every row through calculate_offensive_points
+    via map_elements, and the trend needs carries/targets/games only.
+
+    Returns: player_id, season, position, team, games_played,
+    usage_volume, usage_share
+    """
+    raw = nfl.load_player_stats(sorted(seasons)).filter(
+        (pl.col("season_type") == "REG")
+        & pl.col("player_id").is_not_null()
+        & pl.col("position").is_in(TREND_POSITIONS)
+    )
+
+    team_column = "team" if "team" in raw.columns else "recent_team"
+
+    per_season = (
+        raw.sort("week")
+        .group_by(["player_id", "season"], maintain_order=True)
+        .agg([
+            pl.col("carries").sum().alias("carries"),
+            pl.col("targets").sum().alias("targets"),
+            pl.len().alias("games_played"),
+            pl.col("position").last().alias("position"),
+            pl.col(team_column).last().alias("team"),
+        ])
+    )
+    per_season = normalize_team_column(per_season, column="team")
+
+    # Each season's share uses THAT season's team, so a player who moved
+    # in the middle of the window still gets an apples-to-apples slope.
+    # This is why usage trend does not need the team_changed null-out
+    # that workload_share requires: workload_share divides a trailing
+    # multi-year numerator by the CURRENT team's pace, which mixes
+    # eras. The trend never does that.
+    tendency = compute_team_tendency(seasons)
+    tendency = normalize_team_column(tendency, column="team")
+
+    joined = per_season.join(tendency, on=["team", "season"], how="left")
+
+    return joined.with_columns([
+        pl.when(pl.col("position") == "RB")
+        .then(pl.col("carries") / pl.col("games_played"))
+        .when(pl.col("position").is_in(["WR", "TE"]))
+        .then(pl.col("targets") / pl.col("games_played"))
+        .otherwise(None)
+        .alias("usage_volume"),
+    ]).with_columns([
+        pl.when(pl.col("position") == "RB")
+        .then(pl.col("usage_volume") / pl.col("rush_att_pg"))
+        .when(pl.col("position").is_in(["WR", "TE"]))
+        .then(pl.col("usage_volume") / pl.col("pass_att_pg"))
+        .otherwise(None)
+        .alias("usage_share"),
+    ]).select([
+        "player_id", "season", "position", "team", "games_played",
+        "usage_volume", "usage_share",
+    ])
+
+
+def compute_usage_trend(seasons):
+    """
+    Direction of a player's usage across the baseline window -- the
+    thing `workload_share` structurally cannot see. A 22% target share
+    is the same number whether it came from 15% -> 18% -> 22% or from
+    30% -> 26% -> 22%, and those two players should not be projected
+    alike.
+
+    Three variants are produced because Phase 10 CP1 tests all three
+    rather than assuming which basis is right (Aug 4 decision):
+
+      usage_trend_share     slope of share-of-team-volume per season.
+                            Immune to team pace: a rising share on a
+                            slowing offense still reads as rising.
+                            This is the same basis as workload_share,
+                            so trend and level are directly comparable
+                            -- which also means they may be
+                            collinear, checked at fit time.
+
+      usage_trend_volume    slope of raw per-game carries/targets.
+                            Confounds player role growth with team
+                            volume, but it's what actually shows up in
+                            a box score.
+
+      usage_trend_relative  share slope divided by mean share. Separates
+                            22%->26% (+18% relative) from 5%->9%
+                            (+80% relative) -- absolute slope calls
+                            those nearly identical. Null below a
+                            RELATIVE_TREND_FLOOR mean share, since
+                            dividing by a near-zero denominator
+                            manufactures enormous slopes out of
+                            rounding noise.
+
+    Seasons in which the player appeared in fewer than MIN_TREND_GAMES
+    games are dropped before fitting -- a 2-game injury season is a
+    fact about availability, not about role, and it would dominate a
+    3-point slope. Phase 11 handles availability properly.
+
+    Players with only 2 usable seasons DO get a slope (Aug 4 decision:
+    keep the coverage) but are flagged `trend_low_confidence`, so the
+    fit can test whether a 2-point slope deserves the same weight as a
+    3-point one -- either as its own term or interacted with the trend.
+    Fewer than 2 usable seasons yields nulls, which fit_weights imputes
+    to the position mean.
+
+    QB is null throughout, matching workload_share.
+
+    Returns: player_id, usage_trend_share, usage_trend_volume,
+    usage_trend_relative, trend_seasons_used, trend_low_confidence
+    """
+    usage = _load_season_usage(seasons).filter(
+        (pl.col("games_played") >= MIN_TREND_GAMES)
+        & pl.col("usage_share").is_not_null()
+        & pl.col("usage_volume").is_not_null()
+    )
+
+    grouped = (
+        usage.sort(["player_id", "season"])
+        .group_by("player_id", maintain_order=True)
+        .agg([
+            pl.col("season").alias("_seasons"),
+            pl.col("usage_share").alias("_shares"),
+            pl.col("usage_volume").alias("_volumes"),
+            pl.len().alias("trend_seasons_used"),
+        ])
+    )
+
+    def _slopes(row):
+        xs = [float(s) for s in row["_seasons"]]
+        shares = [float(v) for v in row["_shares"]]
+        volumes = [float(v) for v in row["_volumes"]]
+
+        share_slope = _ols_slope(xs, shares)
+        volume_slope = _ols_slope(xs, volumes)
+
+        mean_share = sum(shares) / len(shares) if shares else 0.0
+        if share_slope is None or mean_share < RELATIVE_TREND_FLOOR:
+            relative = None
+        else:
+            relative = share_slope / mean_share
+
+        return {
+            "usage_trend_share": share_slope,
+            "usage_trend_volume": volume_slope,
+            "usage_trend_relative": relative,
+        }
+
+    slope_struct = pl.Struct([
+        pl.Field("usage_trend_share", pl.Float64),
+        pl.Field("usage_trend_volume", pl.Float64),
+        pl.Field("usage_trend_relative", pl.Float64),
+    ])
+
+    result = grouped.with_columns(
+        pl.struct(["_seasons", "_shares", "_volumes"])
+        .map_elements(_slopes, return_dtype=slope_struct)
+        .alias("_slopes")
+    ).unnest("_slopes")
+
+    return result.with_columns([
+        # MODEL TERM. No slope could be fitted at all. Paired with
+        # mean-imputation in fit_weights, this is a standard missing
+        # indicator -- it keeps these players in the sample instead of
+        # dropping them, which matters because they are not a random
+        # subset (Aug 4: mean delta +0.97 vs -0.79 for the rest).
+        (pl.col("trend_seasons_used") < MIN_TREND_SEASONS_MODEL).alias("trend_missing"),
+        # DISPLAY FLAG ONLY. Exactly 2 seasons of history.
+        #
+        # This started life as "discount these" and the data said the
+        # opposite: the trend signal is CARRIED by 2-season players
+        # (RB p=0.0013 including them, p=0.259 on 3-season-only, whose
+        # 95% CI [-3.43, +12.86] still contains the 2-season estimate).
+        # Explicit discount interactions tested p=0.57 (RB) and p=0.76
+        # (TE). So it earns a column on the board and no weight in the
+        # model.
+        (pl.col("trend_seasons_used") == MIN_TREND_SEASONS_MODEL).alias("trend_low_confidence"),
+    ]).select([
+        "player_id", "usage_trend_share", "usage_trend_volume",
+        "usage_trend_relative", "trend_seasons_used", "trend_missing",
+        "trend_low_confidence",
+    ])
+
+
 def compute_live_team_changed(upcoming_season=UPCOMING_SEASON):
     """
     Live-path equivalent of backtest.py's compute_player_team_changed --
@@ -339,7 +624,9 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
     Returns: player_id, team, position, pass_att_pg, rush_att_pg,
     qb_changed, coach_changed, continuity_score,
     returning_oline_starters, position_competition_ppg,
-    recent_major_injury, workload_share, experience, team_changed
+    recent_major_injury, workload_share, experience, age,
+    usage_trend_share, usage_trend_volume, usage_trend_relative,
+    trend_seasons_used, trend_low_confidence, team_changed
     """
     most_recent_season = max(seasons)
 
@@ -354,6 +641,8 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
 
     workload_share = compute_workload_share(veteran_features, tendency)
     experience = compute_experience(upcoming_season)
+    age = compute_age(upcoming_season)
+    usage_trend = compute_usage_trend(seasons)
     team_changed = compute_live_team_changed(upcoming_season)
 
     player_level = (
@@ -363,10 +652,18 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
         .join(injury_flag, on="player_id", how="left")
         .join(workload_share, on="player_id", how="left")
         .join(experience, on="player_id", how="left")
+        .join(age, on="player_id", how="left")
+        .join(usage_trend, on="player_id", how="left")
         .join(team_changed, on="player_id", how="left")
         .with_columns([
             pl.col("recent_major_injury").fill_null(False),
             pl.col("team_changed").fill_null(True),
+            # No usable seasons at all (rookies, and veterans whose every
+            # season fell under MIN_TREND_GAMES) read as 0 seasons used
+            # and trend_missing -- not as a silent null count.
+            pl.col("trend_seasons_used").fill_null(0),
+            pl.col("trend_missing").fill_null(True),
+            pl.col("trend_low_confidence").fill_null(False),
         ])
         .with_columns(
             # workload_share is carries(or targets)/game measured against the

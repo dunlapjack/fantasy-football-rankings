@@ -12,6 +12,8 @@ from src.situational import (
     compute_recent_injury_flag,
     compute_workload_share,
     compute_experience,
+    compute_age,
+    compute_usage_trend,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -134,6 +136,8 @@ def build_backtest_season(target_season):
     Returns: player_id, player_name, position, team, baseline_ppg,
     actual_ppg, delta, pass_att_pg, rush_att_pg, qb_changed,
     coach_changed, returning_oline_starters, position_competition_ppg,
+    experience, age, usage_trend_share, usage_trend_volume,
+    usage_trend_relative, trend_seasons_used, trend_low_confidence,
     season
     """
     reference_season = target_season - 1
@@ -182,6 +186,13 @@ def build_backtest_season(target_season):
     workload_share = compute_workload_share(baseline_with_team, tendency)
     injury = compute_recent_injury_flag([reference_season])
     experience = compute_experience(target_season)
+    age = compute_age(target_season)
+
+    # Trend is fitted over the SAME window the baseline is built from
+    # (target-3 .. target-1), so it never sees the target season. If
+    # these two windows ever drift apart, the trend starts leaking the
+    # outcome into the predictor.
+    usage_trend = compute_usage_trend(baseline_seasons)
 
     combined = (
         baseline_with_team.join(actual, on="player_id", how="left")
@@ -191,9 +202,14 @@ def build_backtest_season(target_season):
         .join(workload_share, on="player_id", how="left")
         .join(injury, on="player_id", how="left")
         .join(experience, on="player_id", how="left")
+        .join(age, on="player_id", how="left")
+        .join(usage_trend, on="player_id", how="left")
         .with_columns([
             pl.col("team_changed").fill_null(True),
             pl.col("recent_major_injury").fill_null(False),
+            pl.col("trend_seasons_used").fill_null(0),
+            pl.col("trend_missing").fill_null(True),
+            pl.col("trend_low_confidence").fill_null(False),
         ])
         .filter(pl.col("actual_ppg").is_not_null())
         .with_columns([

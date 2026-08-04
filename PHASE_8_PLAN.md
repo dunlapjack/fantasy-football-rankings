@@ -188,12 +188,35 @@ anything downstream. This needs a separate signal.
 - **CP5** — Test shrinking low-sample baselines toward the position mean, with the
   shrinkage strength backtested rather than picked by feel.
 
-**C. PUP / NFI treatment.** `injury_overrides.csv` currently has one binary lever:
+**C. Replacement level in shallow leagues.** Found while verifying the first v9 boards.
+`compute_replacement_ranks()` sets replacement at the last *starter* — QB12 in a
+12-team league, so QB6 in a 6-team one. That's wrong the shallower the league gets. In
+the Dunlap league QB7 through QB32 are all sitting on waivers, so the real fallback is
+a perfectly good starting quarterback, not the worst rostered one.
+
+The visible symptom: Josh Allen ranks 10th on the Lebron James board and **5th** on
+Dunlap; Brock Bowers 16th and **10th**; Trevor Lawrence 97th and **71st**. The math is
+internally consistent — RB/WR replacement climbs from rank 29 to 14, a 15-spot jump up
+a steep part of the curve, while QB moves only 12 → 6, so skill positions shed more VOR
+and QBs float up by comparison. But the conclusion is backwards from how a 6-team
+league actually drafts, and the board is currently telling you to spend the 5th pick on
+a quarterback you could stream.
+
+- **CP6** — Derive replacement level from expected players drafted per position
+  (`total_rounds × num_teams` allocated across positions by observed draft behavior)
+  rather than from starter slots. Sanity condition: the 6-team board should push QB and
+  TE *down* relative to the 12-team board, not up.
+- **CP7** — Re-read the top 30 of both boards side by side afterward. This bug was
+  invisible on the 12-team board, where starter count and waiver depth roughly agree;
+  it only surfaced because a second league forced the comparison. Any replacement-level
+  change needs checking at both league sizes for the same reason.
+
+**D. PUP / NFI treatment.** `injury_overrides.csv` currently has one binary lever:
 `OUT_SEASON` removes a player, everything else is a note. But PUP means missing *at
 least* the first four games — not a maybe. George Kittle (torn Achilles, 13.09 adj PPG,
 ADP 108) and Zach Charbonnet (torn ACL, 10.44, ADP 143) both show at full value today.
 
-- **CP6** — Add a partial games-available haircut for `PUP` and `NFI` rather than the
+- **CP8** — Add a partial games-available haircut for `PUP` and `NFI` rather than the
   current all-or-nothing treatment. Scale the projection by expected share of the
   season available, using each league's `fantasy_season_length` — so a 4-game absence
   costs roughly 4/14 in Lebron James and 4/12 in Dunlap Family.

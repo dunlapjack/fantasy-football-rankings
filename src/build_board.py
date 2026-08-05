@@ -213,15 +213,38 @@ def load_config(path=CONFIG_PATH):
 
 def league_slug(config):
     """
-    'Dunlap Family Fantasy Football' -> 'DunlapFamily'.
+    The filename stem. Resolution order: `board_label`, then `config_key`,
+    then the league name.
 
-    Prefers an explicit `config_key` if the config sets one, since the league
-    name is a display string that may change wording without meaning a
-    different league.
+    `board_label` exists because a board is a function of RULES, not of a
+    league's name. Jack runs several 12-team leagues on identical
+    settings, and one "12Team" board serves all of them -- three
+    byte-identical files named after three commissioners would be worse
+    than one named after what it actually is.
+
+    THE HAZARD THIS CREATES, stated plainly: two configs sharing a
+    `board_label` write to the SAME file, and the second build silently
+    overwrites the first. That is exactly what you want while the rules
+    match and exactly what you don't the moment they diverge. So if you
+    ever add a 12-team league with different scoring, a different keeper
+    rule, or a different roster, give it its own label. The label being an
+    explicit field rather than something derived from `num_teams` is what
+    makes that a decision you make rather than a collision you discover on
+    draft day.
     """
+    # `board_label` ships VERBATIM. str.capitalize() lowercases everything
+    # after the first character, which turned "12Team" into "12team" --
+    # the label is already written the way it should appear, so nothing
+    # should be reformatting it. `config_key` is snake_case by convention
+    # and still gets converted.
+    label = config.get("board_label")
+    if label:
+        return str(label).strip().replace(" ", "")
+
     key = config.get("config_key")
     if key:
         return "".join(part.capitalize() for part in str(key).split("_"))
+
     words = [w for w in str(config["league_name"]).split() if w.lower() != "fantasy"]
     return "".join(w.capitalize() for w in words[:2])
 
@@ -977,8 +1000,8 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
     ws.merge_cells(f"A1:{last_col}1")
     title = ws["A1"]
     title.value = (
-        f"{config['league_name']} League — 2026 Draft Board "
-        "(Statistics-Only Model, VOR Draft Order)"
+        f"{config['league_name']} — 2026 Draft Board "
+        f"({teams}-team, {rounds} rounds, statistics-only model, VOR draft order)"
     )
     title.font = Font(name=FONT_NAME, size=14, bold=True)
     ws.row_dimensions[1].height = 22

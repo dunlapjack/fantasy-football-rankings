@@ -1,6 +1,7 @@
 {
-    "league_name": "Lebron James",
+    "league_name": "12-Team Full PPR",
     "config_key": "lebron_james",
+    "board_label": "12Team",
     "num_teams": 12,
     "total_rounds": 16,
     "regular_season_weeks": [1, 14],

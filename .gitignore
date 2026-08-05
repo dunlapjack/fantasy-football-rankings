@@ -237,3 +237,11 @@ data/*
 
 # Excel lock files (created while a workbook is open)
 ~$*
+
+# Superseded draft boards. Only the CURRENT model version stays in the
+# working tree -- older ones live in git history, where they can be
+# recovered without sitting next to the real one in a folder you open
+# under time pressure on draft day.
+2026_*_Board_v[0-9].xlsx
+2026_*_Board_v10.xlsx
+2026_*_Board_v11.xlsx

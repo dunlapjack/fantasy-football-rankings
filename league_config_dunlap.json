@@ -1,6 +1,7 @@
 {
-    "league_name": "Dunlap Family Fantasy Football",
+    "league_name": "6-Team Full PPR",
     "config_key": "dunlap_family",
+    "board_label": "6Team",
     "num_teams": 6,
     "total_rounds": 16,
     "regular_season_weeks": [1, 12],

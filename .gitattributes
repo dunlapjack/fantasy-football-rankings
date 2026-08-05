@@ -1,0 +1,29 @@
+# Line-ending policy, made explicit.
+#
+# Without this file, how a line ending gets stored depends on each
+# machine's `core.autocrlf` setting rather than on anything in the repo.
+# That is why `git status` was reporting modifications to files nobody had
+# edited -- adp.py, keepers.py, scoring.py, team_codes.py and friends --
+# and why every commit risked carrying a whole-file rewrite that buries
+# the three real changed lines inside it.
+#
+# `text=auto` tells git to normalize to LF in the repository and check out
+# whatever the platform expects. Windows working copies stay CRLF, the
+# stored history stays LF, and the decision now lives in the repo instead
+# of in a global setting on one laptop.
+* text=auto
+
+# Explicitly text, so a stray setting can never mangle them.
+*.py    text
+*.md    text
+*.json  text
+*.csv   text
+*.ipynb text
+
+# Binary. Line-ending translation on a zip container (which is what an
+# .xlsx is) corrupts the file, and diffing one produces noise rather than
+# information.
+*.xlsx  binary
+*.xls   binary
+*.png   binary
+*.jpg   binary

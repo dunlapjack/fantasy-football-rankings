@@ -70,7 +70,12 @@ CONFIG_PATH = PROJECT_ROOT / "league_config.json"
 # v10. Replacement level changed from starter slots to expected players
 # drafted (CP6), which moves every VOR and reorders the board, so it is a
 # ranking-logic change and bumps the version even though no coefficient did.
-MODEL_VERSION = 11
+# Phase 11 A+B (Aug 4): 11 -> 12. The baseline definition itself changed
+# twice -- `discount_thin` season weighting (CP3) and shrinkage toward the
+# position's 30th percentile at K=2 (CP5) -- and all four positions were
+# refit against the new deltas. RB `trend_missing` drops out of the model
+# entirely as a result. This is the largest single move since Phase 7.
+MODEL_VERSION = 12
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -123,15 +128,51 @@ POSITION_FILLS = {
     "WR": "FCE5CD",  # light orange
     "TE": "EAD1DC",  # light mauve
 }
+# Phase 11 B (CP4). Baseline confidence, shaded onto the GP (sample) cell
+# rather than given a column of its own. The board was reordered for
+# density and this is a warning, not a number you read -- you want to
+# notice it while looking at something else.
+#
+# Thresholds are games in the 3-year window: under one full season is
+# amber, under half a season is red. Shrinkage has already corrected the
+# projection by the time you see this; the shading says how much of what
+# you are looking at is the model's prior rather than the player's record.
+LOW_CONFIDENCE_GAMES = 17
+VERY_LOW_CONFIDENCE_GAMES = 8
+LOW_CONFIDENCE_FILL = "FFE599"       # amber
+VERY_LOW_CONFIDENCE_FILL = "F4B183"  # orange
+
 UNDRAFTABLE_FILL = "D9D9D9"  # gray: has ADP but ranks past the last pick
 NO_ADP_FILL = "F4CCCC"       # pink: no real ADP, hard-capped to the bottom
 OUT_FILL = "E06666"          # strong red: out for the season, do not draft
 HEADER_FILL = "1F4E78"
 INJURY_FILL = "FF0000"
 
+# Ordered by what you actually reach for on the clock, left to right, in
+# four blocks. Through v11 the order was an accident of when each column
+# got added, which put "Has ADP" -- a filter helper rendered in invisible
+# text -- eight columns left of the bye week.
+#
+#   1. WHO      Rank / Pos / Player, frozen so they survive scrolling.
+#   2. ACT      Draft Target answers the only question the clock asks.
+#               Then VOR (what he's worth), Adj PPG (the projection under
+#               it), Value Δ and the two ADP columns (what the room thinks).
+#   3. CHECK    Why, then the things that veto a pick you'd otherwise make:
+#               bye collisions, availability, injury.
+#   4. AUDIT    Model internals. Real, but not draft-day reading.
 COLUMNS = [
-    ("Rank", 7), ("Pos", 6), ("Player", 24), ("Adj PPG", 9), ("Sit Adj", 8),
-    ("VOR", 8),
+    # -- 1. WHO --------------------------------------------------------
+    ("Rank", 7), ("Pos", 6), ("Player", 24),
+    # -- 2. ACT --------------------------------------------------------
+    ("Draft Target", 24), ("VOR", 8), ("Adj PPG", 9),
+    ("Value Δ (picks)", 12), ("ADP (Rd.Pk)", 12), ("ADP (Ovr)", 10),
+    # -- 3. CHECK ------------------------------------------------------
+    # Phase 11. Plain-language decomposition of Sit Adj: the largest
+    # signed contributions, relative to an average player at that
+    # position. Generated from the same weights that produce the number
+    # in Sit Adj, so the two cannot disagree.
+    ("Why (value drivers)", 46),
+    ("Bye", 6), ("Team", 7), ("Recent Injury", 12),
     # Phase 11 CP8. Availability, kept OUT of the ranking on purpose.
     # Exp Gm is this league's regular season minus known PUP/NFI absence;
     # Exp Pts is Adj PPG x Exp Gm. Adj PPG stays an honest per-game rate,
@@ -140,14 +181,8 @@ COLUMNS = [
     # number in each league (12-game regular season in Dunlap, 14 in
     # Lebron James), which no single rank column could express.
     ("Exp Gm", 8), ("Exp Pts", 9),
-    # Phase 11. Plain-language decomposition of Sit Adj: the largest
-    # signed contributions, relative to an average player at that
-    # position. Generated from the same weights that produce the number
-    # in Sit Adj, so the two cannot disagree.
-    ("Why (value drivers)", 46),
-    ("Draft Target", 24), ("Team", 7), ("ADP (Ovr)", 10),
-    ("ADP (Rd.Pk)", 12), ("Value Δ (picks)", 12), ("Has ADP", 4), ("Bye", 6),
-    ("Rook", 6), ("Recent Injury", 12), ("GP (sample)", 11),
+    # -- 4. AUDIT ------------------------------------------------------
+    ("Sit Adj", 8), ("Rook", 6),
     # Phase 10. Age is a model input at RB/WR/TE (it replaced
     # `experience`, which it beat at every position). Usage Trend is
     # also a model input at all three -- WR only after the training set
@@ -159,7 +194,8 @@ COLUMNS = [
     # player was mean-imputed. Worth showing rather than hiding: the
     # trend signal turned out to be CARRIED by the n=2 players, not
     # weakened by them.
-    ("Age", 6), ("Usage Trend", 11), ("Trend n", 8),
+    ("Age", 6), ("Usage Trend", 11), ("Trend n", 8), ("GP (sample)", 11),
+    ("Has ADP", 4),
     ("Notes (manual)", 45),
 ]
 
@@ -508,6 +544,16 @@ def build_value_drivers(players, weights_by_position=None):
 
         # Availability is not part of Sit Adj and must not look like it
         # is, so it goes after a pipe rather than into the sum.
+        # Phase 11 B (CP4). If shrinkage moved this player materially,
+        # say so and by how much. A projection that is largely the
+        # model's prior rather than the player's record is the single
+        # most important thing to know about it, and it belongs next to
+        # the other reasons rather than inferred from a shaded cell.
+        games = row.get("games_played")
+        shrink = row.get("baseline_shrink_delta")
+        if games is not None and shrink is not None and abs(shrink) >= DRIVER_MIN_ABS:
+            text += f" | {shrink:+.1f} thin sample ({games:.0f} gm)"
+
         missed = row.get("expected_games_missed") or 0.0
         if row.get("out_for_season"):
             text += " | OUT for season"
@@ -977,36 +1023,46 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
         # hugely positive -- the market drops an injured player while the
         # model's trailing-average projection doesn't move -- and that gap
         # is exactly what the column normally labels "bargain."
-        values = [
-            rank,
-            row["position"],
-            row["player_name"],
-            row["adjusted_fantasy_points_per_game"],
-            row.get("situational_adjustment"),
-            row["vor"],
-            row.get("expected_games"),
-            row.get("expected_total_points"),
-            row.get("value_drivers"),
-            row["draft_target"],
-            row["team"],
-            row["adp"] if has_adp else None,
-            row["adp_slot"] if has_adp else None,
-            row["value_delta"] if (has_adp and not out_for_season) else None,
-            has_adp,
-            row["bye"] if has_adp else None,
-            "R" if row["is_rookie"] else None,
-            ("OUT (2026)" if out_for_season
-             else ("INJURED" if row["recent_major_injury"] else None)),
-            row["games_played"],
-            row.get("age"),
+        # Keyed by column LABEL, not position. Reordering COLUMNS above is
+        # now a one-line edit -- previously it meant hand-shuffling this
+        # list and a block of number-format indices in lockstep, with
+        # nothing failing loudly if you got it wrong.
+        cells = {
+            "Rank": rank,
+            "Pos": row["position"],
+            "Player": row["player_name"],
+            "Draft Target": row["draft_target"],
+            "VOR": row["vor"],
+            "Adj PPG": row["adjusted_fantasy_points_per_game"],
+            "Value Δ (picks)": (row["value_delta"]
+                                if (has_adp and not out_for_season) else None),
+            "ADP (Rd.Pk)": row["adp_slot"] if has_adp else None,
+            "ADP (Ovr)": row["adp"] if has_adp else None,
+            "Why (value drivers)": row.get("value_drivers"),
+            "Bye": row["bye"] if has_adp else None,
+            "Team": row["team"],
+            "Recent Injury": ("OUT (2026)" if out_for_season
+                              else ("INJURED" if row["recent_major_injury"] else None)),
+            "Exp Gm": row.get("expected_games"),
+            "Exp Pts": row.get("expected_total_points"),
+            "Sit Adj": row.get("situational_adjustment"),
+            "Rook": "R" if row["is_rookie"] else None,
+            "Age": row.get("age"),
             # Stored as a share-per-season slope (0.021 = +2.1 points of
             # team share per year); rendered in percentage points, which
             # is the unit the number is actually legible in.
-            (row.get("usage_trend_share") * 100.0
-             if row.get("usage_trend_share") is not None else None),
-            row.get("trend_seasons_used"),
-            row.get("injury_note"),  # Notes -- override note, else blank for draft day
-        ]
+            "Usage Trend": (row.get("usage_trend_share") * 100.0
+                            if row.get("usage_trend_share") is not None else None),
+            "Trend n": row.get("trend_seasons_used"),
+            "GP (sample)": row["games_played"],
+            "Has ADP": has_adp,
+            # Override note, else blank for draft-day scribbling.
+            "Notes (manual)": row.get("injury_note"),
+        }
+        missing = [label for label, _ in COLUMNS if label not in cells]
+        if missing:
+            raise KeyError(f"COLUMNS declares {missing} with no value supplied")
+        values = [cells[label] for label, _ in COLUMNS]
 
         # Left-align the text columns; everything else centers.
         left_aligned = {
@@ -1053,6 +1109,23 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
             injury = ws.cell(r, COLUMN_INDEX["Recent Injury"])
             injury.fill = PatternFill("solid", start_color=INJURY_FILL)
             injury.font = Font(name=FONT_NAME, size=11, color="FFFFFF", bold=True)
+
+        # Phase 11 B (CP4). Rookies are skipped: their baseline is a
+        # cohort projection and `games_played` describes a college career
+        # the model never saw, so shading it would be answering a
+        # different question than the one the colour implies.
+        games = row.get("games_played")
+        if games is not None and not row["is_rookie"]:
+            if games < VERY_LOW_CONFIDENCE_GAMES:
+                confidence_fill = VERY_LOW_CONFIDENCE_FILL
+            elif games < LOW_CONFIDENCE_GAMES:
+                confidence_fill = LOW_CONFIDENCE_FILL
+            else:
+                confidence_fill = None
+            if confidence_fill:
+                cell = ws.cell(r, COLUMN_INDEX["GP (sample)"])
+                cell.fill = PatternFill("solid", start_color=confidence_fill)
+                cell.font = Font(name=FONT_NAME, size=11, bold=True)
 
     last_row = header_row + board.height
     ws.freeze_panes = "D9"
@@ -1122,6 +1195,21 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
 
     players = apply_injury_overrides(players)
     players = compute_expected_points(players, config)
+
+    # How far shrinkage moved this player, for the Why column. Computed
+    # here rather than stored in player_features.csv so it can never
+    # disagree with the two columns it is the difference of.
+    if "fantasy_points_per_game_shrunk" in players.columns:
+        players = players.with_columns(
+            (pl.col("fantasy_points_per_game_shrunk")
+             - pl.col("fantasy_points_per_game")).alias("baseline_shrink_delta")
+        )
+        moved = players.filter(pl.col("baseline_shrink_delta").abs() >= 0.5)
+        print(f"Baseline shrinkage: {moved.height} players moved by 0.5+ PPG")
+    else:
+        print("NOTE: no shrunk baseline in player_features.csv -- "
+              "re-run `python -m src.pipeline` to apply Phase 11 CP5.")
+
     players = build_value_drivers(players)
 
     starter_ranks = compute_starter_ranks(config)

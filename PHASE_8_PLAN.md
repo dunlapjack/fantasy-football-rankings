@@ -386,6 +386,87 @@ the high-ceiling players you most want ranked correctly.
 - **CP3** — Adopt whichever backtests better; note this touches `features.py`, which
   everything downstream depends on. Re-verify the Phase 3 spot-checks after changing it.
 
+### Phase 11 A — CP1–CP3 closed, `discount_thin` ADOPTED (Aug 4)
+
+**This section was first written as "NOTHING ADOPTED" and is now the
+opposite.** The first CP2 run scored the silently-corrupted five-season
+training set described in the incident above. Re-run on nine seasons, the
+verdict flips. Both versions are left visible in git history rather than
+quietly overwritten, because the interesting thing here is not which answer
+won — it is that a data bug and a modelling result are indistinguishable from
+the output of a decision rule.
+
+**CP2 — `discount_thin` clears both clauses.** Paired ΔMAE on the AFFECTED
+subgroup, nine seasons (n=1617):
+
+| scheme | paired ΔMAE | SE | ratio | all positions positive? |
+|---|---|---|---|---|
+| **`discount_thin`** | **+0.0619** | **0.0289** | **2.14** | **yes** |
+| `recency_x_games` | +0.0329 | 0.0324 | 1.02 | no — RB −0.025 |
+| `games` | −0.0577 | 0.0328 | — | no |
+| `drop_thin` | −0.1635 | 0.0729 | — | no |
+
+Per position, `discount_thin`: QB **+0.4260 ± 0.1902**, WR +0.0420 ± 0.0396,
+TE +0.0275 ± 0.0332, RB **+0.0005 ± 0.0549**.
+
+Read honestly: the effect is real but small and **carried almost entirely by
+quarterbacks**. RB is +0.0005, which is zero. That is consistent with CP1's
+finding that the thin-season population is disproportionately backup QBs, and
+with the earlier observation that affected-QB MAE (4.55) is far worse than any
+other position's.
+
+**Why believe this and not the earlier null.** The point estimate barely moved
+between the two runs — 0.0702 to 0.0619 — while the standard error fell from
+0.0378 to 0.0289. More data shrank the error bar around a stable estimate,
+which is the signature of a real effect being measured better, not of a
+different effect appearing. The five-season run also had RB at −0.013; nine
+seasons puts it at +0.0005. Both are zero; the narrow run just had a noisier
+zero that happened to land negative and trip clause (b).
+
+Still +0.06 PPG against situational adjustments that run ±3, and still
+in-sample. Phase 13 CP2's holdout remains the arbiter.
+
+**CP1 is the finding, and it redirects the phase.** Exposure in the pool that
+matters is small: **8%** of the market top 100 (by ADP) has a season under 8
+games in the window. The plan's premise — that injury-blended baselines drag
+down "exactly the high-ceiling players you most want ranked correctly" — is
+mostly not happening to the players actually being drafted.
+
+The model top 100 is 19% exposed, and *who* is on that list is the real result:
+Carson Wentz, Jeff Driskel, Marcus Mariota, Jacoby Brissett, Jameis Winston,
+Easton Stick, Joe Flacco, Russell Wilson. **Backup quarterbacks, nearly all
+without an ADP.** Jeff Driskel sits inside the model's top 100 at 17.15 adj PPG
+on a *one-game* sample; Phil Mafah at 13.51 on one game.
+
+Their rates are not depressed by injury — they are **inflated by spot duty**,
+and the model cannot tell the sample is worthless. That is Section B's problem,
+not A's, and CP1 shows B's population is both larger and more distorted than
+A's. The two halves of this phase were sized backwards when it was written.
+
+The QB numbers agree from the other direction: affected-QB MAE is 4.15 against
+~2.7 at skill positions, and `discount_thin` at QB is +0.6252 ± 0.2531 — the
+only result past 2 SE anywhere in the run. **Not adopted.** It rests on 25
+moved rows and was found by subgroup search after the pooled test failed, which
+is the same shape of evidence as the aging curve that changed three times.
+Carried to Phase 13 CP2's holdout to be tested rather than believed.
+
+`features.DEFAULT_SCHEME` is now `discount_thin`. This changes
+`fantasy_points_per_game` everywhere, so both the training set and the live
+board move: rerun order is `backtest → shrinkage sweep → fit_weights →
+pipeline → build_board`.
+
+**CP5 must be re-measured on top of it.** The shrinkage sweep below was fitted
+against `recency` baselines. Both changes target thin-history players, so
+stacking two independently-measured effects is the same double-count the plan
+forbade for `trend_missing`. The sweep re-runs after the baseline changes and
+before any K is adopted.
+
+> **CP4 display decision (Aug 4):** the games-played confidence signal gets
+> **colour-coded onto the existing `GP (sample)` column** — red/amber shading by
+> how thin the baseline is, with the reason appended to the Why column — rather
+> than a new Confidence column. The board was just reordered for density and a
+> 24th column works against that.
+
 **B. Small-sample veterans.** A baseline built on 8 games is treated with exactly the
 same confidence as one built on 37. Cam Skattebo ranks 11th on 8 games, Omarion
 Hampton 18th on 9, Phil Mafah projects 13.4 PPG on a single game.
@@ -532,6 +613,240 @@ shift them all silently; Phase 11 inserts three, so the indices became a
 **MODEL_VERSION 10 → 11 with no refit.** Weights are byte-identical. The bump
 is for the replacement-level change, which reorders the board on ranking logic
 alone.
+
+**Board columns reordered by draft-day importance** (Draft Target / VOR / Adj
+PPG / Value Δ / ADP now sit immediately right of the frozen name block; model
+internals moved to the far right). The row writer is keyed by column label
+instead of list position, so future reordering is a one-line edit and a missing
+value raises instead of silently shifting every cell right.
+
+### INCIDENT — stale `DEFAULT_TARGET_SEASONS` silently narrowed the training set (Aug 4)
+
+Phase 10 widened the training window to 2017–2025 by passing `--seasons` on the
+command line, and `playcaller_history.csv` was extended back to 2016 to support
+it. **The result was never written back to `DEFAULT_TARGET_SEASONS`**, which
+still read `[2021..2025]`.
+
+A later bare `python -m src.backtest` therefore rebuilt the training set at five
+seasons and overwrote the nine-season file. Nothing failed:
+
+| | rows after MIN_GAMES | RB | WR | TE | QB |
+|---|---|---|---|---|---|
+| shipped weights (9 seasons) | 2,750 | 711 | 1145 | 616 | 278 |
+| silently rebuilt (5 seasons) | 1,575 | 402 | 662 | 354 | 157 |
+
+43% of the training data gone, every coefficient moved, no error anywhere. The
+only visible symptom was the Phase 11 B sweep reporting RB `trend_missing` at
++1.051 against the +0.6506 in the shipped JSON — a disagreement that reads like
+a modelling question and was actually a data question.
+
+**Nothing shipped was affected.** `situational_weights.json` and
+`player_features.csv` both predate the bad regeneration and were never refit
+from it, so the live boards are correct. The damage was confined to
+`data/backtest_features.csv`, which is gitignored and regenerates.
+
+Fixed three ways:
+
+- `DEFAULT_TARGET_SEASONS` now holds 2017–2025, so the default matches what the
+  model was actually fitted on.
+- The comment block above it, which explained why 2021 was the earliest
+  possible season, was false after `playcaller_history.csv` was extended and has
+  been rewritten.
+- **`warn_if_narrower_than_available()`** closes the direction the existing
+  guard never covered. `build_backtest_dataset()` already raised when asked for
+  seasons *earlier* than the playcaller file supports — asking for too much
+  fails loudly. Asking for too *little* succeeded silently. It now prints a
+  warning naming the unused seasons before it overwrites anything.
+
+The general lesson worth keeping: a one-sided guard is a guard against the
+direction you already thought of. This one protected against the failure that
+announces itself and not the one that doesn't.
+
+### Phase 11 B — CP4/CP5 shipped, and verification caught two things (Aug 4)
+
+**Adopted:** shrinkage at K=2 toward each position's 30th percentile,
+`james_stein` form. All three pre-committed clauses pass on `discount_thin`
+baselines: +0.0919 ± 0.0334 (2.75 SE) on the low-confidence subgroup, full-pool
+MAE improves at every K, and K=2 is the interior argmax of a 0–8 sweep. The
+effect barely moved when the baseline changed underneath it (+0.0950 →
++0.0919), which is the evidence that CP3 and CP5 capture different things
+rather than double-counting.
+
+**`trend_missing` resolved, as the plan required.** RB's shipped +0.651 exists
+only at K=0 — it fails alpha at every K from 1 to 8. Independently, the
+`trend_missing × age` interaction is **−0.3844 (p=0.029)** on `discount_thin`
+baselines with the main effect collapsing to +0.0458. It is now dropped from
+the RB spec by the fit, and **WR picks up a negative one (−0.4474)** that the
+unshrunk baseline had been masking. Both open questions the plan carried into
+this phase are closed by the same joint fit.
+
+**CP4 shipped as shading, not a column** — `GP (sample)` amber under 17 games,
+orange under 8, with a `| −1.8 thin sample (8 gm)` suffix on the Why column.
+
+#### Verification failure 1 — QB shrinkage inflated backups. FIXED.
+
+`check_shrunk_baseline()` warned that 437 of 856 players moved UP. The cause is
+positional: the anchor is the 30th percentile of players with 16+ games, which
+lands at 3.44 / 3.86 / 2.88 at RB/WR/TE and at **12.52 at QB**, because
+quarterback is one-per-team and "played 16 games" is "was the starter."
+
+Nathan Peterman went −0.40 → **8.21**; 59% of quarterbacks moved up.
+
+This is the same survivorship `fit_weights.SUPPRESS_LEVEL_SHIFT` already
+documents in its own comment. The root cause is a population mismatch: the
+shrinkage sweep scored only players who went on to play 8+ games in the target
+season, so Peterman was never in the population the anchor was fitted on, but
+he is in the population it gets applied to. Shrinkage assumes a small sample is
+a noisy estimate of the same quantity; for a backup QB it is a precise estimate
+of a different one.
+
+`SHRINKAGE_EXCLUDED_POSITIONS = {"QB"}`. 51 of 111 quarterbacks were being
+inflated by 0.5+ PPG and no longer are. `discount_thin` still applies at QB and
+its QB-driven benefit stands — re-weighting a player's own seasons cannot
+inflate him toward anyone else's number.
+
+#### Verification failure 2 — the TE sanity check. TEST CHANGED, with reasons.
+
+CP7's check asserted the BEST player at a position ranks lower in the shallow
+league. It failed on TE: 21 deep, 19 shallow.
+
+Investigated before concluding. The starter floor was the obvious suspect —
+the one piece of starter-based logic left inside the pick-based calculation —
+and removing it moved TE only 19 → 20, so that was not the cause. The actual
+reason is that **the TE production curve is flat**: replacement moves TE21 →
+TE7 between the leagues, which sounds enormous, but costs about as much as
+RB52 → RB32 costs running backs. The two roughly cancel. TE is genuinely
+neutral across the two leagues and that is a legitimate model output.
+
+The test was measuring a claim about positional value with a statistic that
+turns on one player shuffling past a neighbour. It now counts how many of a
+position appear in the top 30 — QB 2 → 1, TE 1 → 1, both passing — and the old
+rank comparison is retained as a SOFT check, since it is noisier but strictly
+more sensitive.
+
+Recorded at length because changing a test that failed is the move that
+deserves the most scrutiny, and the reasoning should be auditable later rather
+than taken on trust.
+
+#### Verification failure 3 — the check that cried wolf
+
+`check_shrunk_baseline()` warned "shrinkage mostly lowers projections — 437 of
+856 moved up" on every run. The premise was arithmetically false: shrinking
+toward the **30th percentile** raises everyone below the 30th percentile. That
+is what the anchor is. Roughly half the pool moving up is the mechanism
+working.
+
+Worse, the noise hid the signal. The QB inflation above was a genuine defect,
+and this check's only comment on it was a warning that was already firing for a
+harmless reason. A check that always warns is a check nobody reads.
+
+Rewritten to assert the thing that actually matters — **shrinkage must never
+inflate a player into draftability** — scoped to ADP-bearing players and
+promoted from soft to hard. Of 156 draftable non-QB veterans exactly one moves
+up: Jonathon Brooks, +0.38 on a 3-game sample. The 371 fringe players who move
+up have a median raw projection of 1.40 PPG and are now printed as context
+rather than asserted against.
+
+#### Sanity read on the shipped v12 board
+
+Josh Allen ranks 9th on the 12-team board and 18th on the 6-team one. Checked
+rather than assumed, since QB is now the only unshrunk position: replacement is
+**QB22 = Tua Tagovailoa, 17.19 PPG on 42 games** — a real veteran starter, so
+Allen's VOR of 9.03 rests on a defensible bar.
+
+**Latent fragility worth recording.** Jeff Driskel (17.10 PPG on a ONE-game
+sample) is QB23, one spot below the line. `compute_vor()` draws replacement
+from the model's top-N by projection, which can include players with no ADP and
+no real sample. Had Driskel landed a tenth of a point higher he would have set
+the quarterback replacement level for the entire board. Excluding QB from
+shrinkage removed the correction that was holding him down, so this is more
+exposed than it was. Candidate fix for Phase 13: draw the replacement player
+from the ADP-bearing pool rather than the raw projection ranking.
+
+### OPEN BUG found while explaining the board — `qb_changed` false positives
+
+Surfaced by a question about Christian McCaffrey, not by a test, which is
+itself worth noting.
+
+`compute_qb_continuity()` defines last season's quarterback as **the player
+with the most pass attempts in 2025**, and compares him to the current 2026
+depth-chart QB1. That is the right definition only when the starter played a
+normal season. When a starter misses significant time, his backup can lead the
+team in attempts — so the 2025 "primary QB" becomes the backup, the 2026 QB1 is
+the returning starter, and the flag fires `qb_changed = True` for a team whose
+quarterback situation is **stabilizing**, not changing. The feature reads the
+sign backwards in exactly the case it most wants to get right.
+
+McCaffrey is flagged and pays −0.30 PPG for it. San Francisco's 2025 attempts
+leader needs checking against Purdy's missed time; if Mac Jones led, the flag
+is wrong and CMC is being charged for Purdy's return.
+
+Eight teams carry the flag: ATL, CLE, LV, MIA, MIN, NYJ, SF, WAS. At least two
+more are suspicious on the same pattern — Miami and Washington both had starters
+miss time in 2025.
+
+Not fixed here, because it is a feature-definition change and every RB
+coefficient was fitted with the current definition; changing it means a refit.
+Carrying it to **Phase 13 CP1** alongside RB age-squared.
+
+- Fix candidate: define last season's QB by **games started**, not attempts,
+  or by attempts among players who started at least half the team's games.
+- The same fault exists in the fitting data, so it is not purely a live-board
+  problem — it has been adding noise to the coefficient all along, which if
+  anything means the true `qb_changed` effect is larger than −0.4977.
+- Second, separate check: `.fill_null(True)` on line 98 means a team with no
+  matched depth-chart QB1 is silently flagged as changed. Confirm all 32 teams
+  matched before trusting any of the eight.
+
+### OPEN BUG — `position_competition_ppg` is diluted by roster length
+
+Found the same way, one question later.
+
+`compute_position_competition()` averages the trailing baseline PPG of **every
+other player at the position on the roster**, unweighted. Rosters at this stage
+of August are camp rosters, so that average is dominated by how many bodies a
+team happens to be carrying rather than by who the player actually competes
+with.
+
+Detroit lists 6 running backs; Pittsburgh lists 13. Gibbs' competition score is
+2.32, and the arithmetic behind it is Pacheco 8.85 plus **four players at 2.30,
+0.37, 0.10 and 0.00**. The one back who threatens his touches contributes a
+fifth of the number. Against a league RB average of 6.33 this is worth **+0.81
+PPG** to Gibbs — most of which is a statement about Detroit's roster *count*,
+not its depth chart.
+
+Sensitivity, to size the problem:
+
+| Definition | Gibbs' competition | Contribution |
+|---|---|---|
+| Current (mean of all 5 others) | 2.32 | **+0.81** |
+| Best backup only (Pacheco) | 8.85 | **−0.51** |
+
+A 1.3 PPG swing on a definition choice nobody has tested. For scale, the actual
+football event Jack asked about — Montgomery (12.72) leaving for Houston and
+Pacheco (8.85) arriving — moves Gibbs only **+0.16 PPG**. The definition is
+worth eight times the roster move.
+
+- **Direction agreed (Aug 4):** restrict the average to the teammates who
+  actually compete for the touches, i.e. the **top k other players by trailing
+  baseline, excluding self** — NOT "the 2nd and 3rd string." The exclusion is
+  what makes it symmetric: for Gibbs the pool is Pacheco and Ozigbo, and for
+  Pacheco it is Gibbs. A backup's competition *is* the starter, and a
+  depth-chart-worded rule would zero that out for every non-starter on the
+  board.
+- Candidate set to backtest against actual next-season PPG: k=1 (max), k=2,
+  k=3, snap- or depth-weighted mean, and **dropping the feature entirely** —
+  which stays on the list because it was dead from Phase 6 to Phase 10 and may
+  only look alive now because roster-length noise correlates with something
+  real. Pick by backtest, not by feel.
+- Same caveat as `qb_changed`: the fitting data carries the identical
+  definition, so this needs a refit, not a live-board patch. Both go to
+  **Phase 13 CP1**.
+- Note this feature was *dead* from Phase 6 until Phase 10, when the wider
+  training window revived it. It is plausible it only looks significant now
+  because roster-length noise happens to correlate with something real
+  (good teams carrying fewer camp bodies at a position they've solved). Worth
+  testing the max-based definition before trusting the coefficient at all.
 
 ### Phase 12 — Rookie-specific model (Aug 13–16)
 

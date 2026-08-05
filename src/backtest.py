@@ -4,7 +4,12 @@ import polars as pl
 import nflreadpy as nfl
 from src.team_codes import normalize_team_column
 from src.rookies import compute_primary_qb_by_team_season
-from src.features import build_veteran_feature_table, load_veteran_stats, aggregate_season_stats
+from src.features import (
+    apply_baseline_shrinkage,
+    aggregate_season_stats,
+    build_veteran_feature_table,
+    load_veteran_stats,
+)
 from src.situational import (
     compute_team_tendency,
     compute_coach_continuity,
@@ -145,11 +150,24 @@ def build_backtest_season(target_season):
     reference_season = target_season - 1
     baseline_seasons = [target_season - 3, target_season - 2, target_season - 1]
 
+    # Phase 11 B. `games_played` and `seasons_used` here describe the
+    # BASELINE window, not the target season -- how much evidence the
+    # projection rests on. They were dropped from this select until now,
+    # which is why no phase before this one could ask "is a baseline built
+    # on 8 games worse than one built on 37" at all: the training set had
+    # no column that answered it. Renamed on the way in, because
+    # `actual_games_played` below is the target season's count and
+    # confusing the two would silently leak the outcome into a predictor.
     baseline = (
         build_veteran_feature_table(baseline_seasons)
         .select(["player_id", "player_name", "position", "fantasy_points_per_game",
-                  "carries_per_game", "targets_per_game"])
-        .rename({"fantasy_points_per_game": "baseline_ppg"})
+                  "carries_per_game", "targets_per_game",
+                  "games_played", "seasons_used"])
+        .rename({
+            "fantasy_points_per_game": "baseline_ppg",
+            "games_played": "baseline_games",
+            "seasons_used": "baseline_seasons",
+        })
     )
 
     actual_raw = load_veteran_stats([target_season])
@@ -215,41 +233,69 @@ def build_backtest_season(target_season):
         ])
         .filter(pl.col("actual_ppg").is_not_null())
         .with_columns([
-            (pl.col("actual_ppg") - pl.col("baseline_ppg")).alias("delta"),
             pl.lit(target_season).alias("season"),
         ])
     )
-    return combined
+
+    # Phase 11 B (CP5). `delta` is now measured against the SHRUNK
+    # baseline, because that is what the live board projects from. Fitting
+    # against the raw baseline and applying against the shrunk one would
+    # bias every coefficient by whatever shrinkage moved.
+    #
+    # Anchor is computed per (season, position) rather than pooled -- a
+    # 2019 player must not be shrunk toward a number that knows about
+    # 2024. Grouping by season is what keeps this honest.
+    combined = apply_baseline_shrinkage(
+        combined,
+        group_by=("season", "position"),
+        value_column="baseline_ppg",
+        games_column="baseline_games",
+    )
+
+    return combined.with_columns(
+        (pl.col("actual_ppg") - pl.col("baseline_ppg_shrunk")).alias("delta")
+    )
 
 
 # How far back the training set reaches.
 #
-# WHY 2021 AND NOT EARLIER (Aug 4)
-# --------------------------------
-# The binding constraint is playcaller_history.csv, which is maintained
-# by hand and starts at 2021. compute_coach_continuity() reads the
-# TARGET season's own row, so a 2021 target needs a 2021 row -- which
-# exists. 2020 does not, so 2020 is the first target season that would
-# require new manual research.
+# 2017-2025, NINE SEASONS. Phase 10 widened the window here and refit
+# everything on it: 2,775 player-seasons against 947, which recovered WR
+# usage trend, revived position_competition_ppg, killed coach_changed,
+# and gave QB enough quarterback-seasons for age to register at all.
 #
-# Everything else reaches back much further: nflverse player stats,
-# weekly rosters, and team stats all predate this comfortably, and
-# baselines for a 2021 target come from 2018-2020, which is fine.
+# THIS CONSTANT WAS STALE FOR A DAY AND IT COST A RUN (Aug 4)
+# -----------------------------------------------------------
+# It still read [2021..2025] after Phase 10 widened the window, because
+# the window was widened by passing --seasons on the command line and
+# nobody wrote the result back here. A later bare `python -m src.backtest`
+# then silently rebuilt the training set at five seasons and overwrote
+# the nine-season file. Nothing failed: the row count dropped 43%, every
+# coefficient moved, and the only visible symptom was that a sweep
+# disagreed with the shipped weights.
 #
-# Started at 3 seasons on the reasonable assumption that recent football
-# predicts best. That logic applies to a PLAYER'S BASELINE -- how we
-# project him -- but not to the training set, which is only estimating
-# how much a coaching change or a year of age is worth. Those
-# relationships are stable enough that more history is close to free
-# accuracy, and small samples were the live constraint: the 3-season-only
-# usage-trend test had n=113 and couldn't separate a real effect from
-# zero. Phase 12's rookie model (5 draft classes) needs it more still.
+# The guard below only ever pointed one way -- it raises if you ask for
+# seasons EARLIER than playcaller_history.csv covers, and said nothing
+# when the default silently asked for fewer than available. Hence
+# warn_if_narrower_than_available(), which closes the other direction.
+#
+# WHAT ACTUALLY BOUNDS THIS
+# -------------------------
+# playcaller_history.csv, maintained by hand, now covers 2016-2026.
+# compute_coach_continuity() reads the TARGET season's own row, so the
+# earliest possible target is 2016. 2017 is used because a 2017 target
+# draws its baseline from 2014-2016, all of which nflverse covers
+# comfortably; going to 2016 would gain one season and add no new
+# information the others don't carry.
+#
+# Recency logic applies to a PLAYER'S BASELINE -- how we project him --
+# but not to the training set, which is only estimating how much a
+# coaching change or a year of age is worth. Those relationships are
+# stable enough that more history is close to free accuracy.
 #
 # Caveat worth remembering: 2020 sits inside the baseline window for the
-# 2021-2023 targets. No preseason, opt-outs, COVID absences. It was
-# already there for 2023; widening the window gives it two more targets
-# to influence.
-DEFAULT_TARGET_SEASONS = [2021, 2022, 2023, 2024, 2025]
+# 2021-2023 targets. No preseason, opt-outs, COVID absences.
+DEFAULT_TARGET_SEASONS = [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
 
 
 def earliest_playcaller_season():
@@ -264,6 +310,39 @@ def earliest_playcaller_season():
     """
     history = pl.read_csv(PLAYCALLER_PATH)
     return int(history.select(pl.col("season").min()).item())
+
+
+def warn_if_narrower_than_available(target_seasons):
+    """
+    Loudly flags a training window narrower than the hand-maintained
+    coverage allows.
+
+    This exists because the opposite check -- raising when you ask for
+    seasons EARLIER than playcaller_history.csv covers -- is one-sided,
+    and the dangerous direction turned out to be the quiet one. Asking
+    for too much fails immediately with a clear message. Asking for too
+    LITTLE succeeds, writes a smaller file over a larger one, and moves
+    every coefficient in the model with no error anywhere.
+
+    A warning rather than an error: deliberately fitting on a subset is a
+    legitimate thing to do (leave-one-season-out, a quick iteration), and
+    those should not have to pass a flag to say so. But it should never
+    happen without the operator seeing a line about it.
+    """
+    earliest = earliest_playcaller_season()
+    available = [s for s in range(earliest + 1, max(target_seasons) + 1)]
+    unused = sorted(set(available) - set(target_seasons))
+    if unused:
+        print(
+            f"\n  WARNING: training on {len(target_seasons)} seasons "
+            f"({min(target_seasons)}-{max(target_seasons)}) but "
+            f"playcaller_history.csv supports {len(available)} "
+            f"({available[0]}-{available[-1]}).\n"
+            f"  Unused: {unused}\n"
+            f"  This will OVERWRITE data/backtest_features.csv with the narrower "
+            f"set. If that is not what you meant, stop now and re-run without "
+            f"--seasons.\n"
+        )
 
 
 def build_backtest_dataset(target_seasons=None):
@@ -288,6 +367,8 @@ def build_backtest_dataset(target_seasons=None):
             f"(`python -m src.make_playcaller_template --seasons ...` writes a "
             f"pre-filled skeleton), or drop those seasons."
         )
+
+    warn_if_narrower_than_available(target_seasons)
 
     tables = [build_backtest_season(s) for s in target_seasons]
     return pl.concat(tables, how="vertical")

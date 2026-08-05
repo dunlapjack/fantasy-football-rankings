@@ -111,6 +111,18 @@ def apply_situational_weights(player_features, weights_by_position=None):
     if weights_by_position is None:
         weights_by_position = load_situational_weights()
 
+    # Phase 11 B (CP5). The adjustment sits on top of the SHRUNK baseline
+    # when one is present, because that is the baseline the weights were
+    # fitted against. Falls back to the raw column so an older
+    # player_features.csv still loads rather than failing on a missing
+    # column -- but the two must not be mixed, which is why
+    # verify_adjustments checks that the shrunk column exists.
+    baseline_column = (
+        "fantasy_points_per_game_shrunk"
+        if "fantasy_points_per_game_shrunk" in player_features.columns
+        else "fantasy_points_per_game"
+    )
+
     adjustment = pl.lit(0.0)
 
     for position, spec in weights_by_position.items():
@@ -154,7 +166,7 @@ def apply_situational_weights(player_features, weights_by_position=None):
     adjustment = pl.when(pl.col("is_rookie")).then(0.0).otherwise(adjustment)
 
     return player_features.with_columns([
-        (pl.col("fantasy_points_per_game") + adjustment).alias(
+        (pl.col(baseline_column) + adjustment).alias(
             "adjusted_fantasy_points_per_game"
         ),
         # Exposed so the draft board can show WHY a player moved, and so

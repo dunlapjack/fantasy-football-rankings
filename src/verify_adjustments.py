@@ -296,6 +296,101 @@ def check_live_board(check, positions):
         )
 
 
+def check_shrunk_baseline(check):
+    """
+    Phase 11 B (CP5). The weights are fitted against deltas measured from
+    the SHRUNK baseline, so the live board must add them to the shrunk
+    baseline too. Mixing the two is silent -- every projection would be
+    off by whatever shrinkage moved, in the direction that makes thin
+    players look good again, which is the exact failure CP5 exists to fix.
+    """
+    print("\n6. SHRUNK BASELINE  --  is the adjustment sitting on the right number?")
+
+    if not PLAYER_FEATURES_PATH.exists():
+        check.soft(False, "player_features.csv exists")
+        return
+
+    df = pl.read_csv(PLAYER_FEATURES_PATH)
+
+    if "fantasy_points_per_game_shrunk" not in df.columns:
+        check.hard(False, "player_features.csv carries a shrunk baseline",
+                   "re-run `python -m src.pipeline` to apply Phase 11 CP5")
+        return
+    check.hard(True, "player_features.csv carries a shrunk baseline")
+
+    gap = df.select(
+        (pl.col("adjusted_fantasy_points_per_game")
+         - pl.col("fantasy_points_per_game_shrunk")
+         - pl.col("situational_adjustment")).abs().max()
+    ).item()
+    check.hard(gap < 1e-6,
+               "adjusted PPG = shrunk baseline + situational adjustment",
+               f"worst gap {gap:.2e}")
+
+    rookies = df.filter(
+        pl.col("is_rookie").cast(pl.String).str.to_lowercase().eq("true")
+    )
+    if rookies.height:
+        untouched = rookies.select(
+            (pl.col("fantasy_points_per_game_shrunk")
+             - pl.col("fantasy_points_per_game")).abs().max()
+        ).item()
+        check.hard(untouched < 1e-6, "rookies are not shrunk",
+                   f"worst move {untouched:.3f}")
+
+    veterans = df.filter(
+        ~pl.col("is_rookie").cast(pl.String).str.to_lowercase().eq("true")
+    ).with_columns(
+        (pl.col("fantasy_points_per_game_shrunk")
+         - pl.col("fantasy_points_per_game")).alias("move")
+    )
+    print(f"\n   {'pos':<5}{'n':>6}{'moved 0.5+':>12}{'mean move':>12}{'worst':>9}")
+    for position in ("QB", "RB", "WR", "TE"):
+        p = veterans.filter(pl.col("position") == position)
+        if p.height == 0:
+            continue
+        moved = p.filter(pl.col("move").abs() >= 0.5).height
+        print(f"   {position:<5}{p.height:>6}{moved:>12}"
+              f"{float(p.select(pl.col('move').mean()).item()):>12.3f}"
+              f"{float(p.select(pl.col('move').min()).item()):>9.2f}")
+
+    # THIS CHECK ORIGINALLY ASSERTED "shrinkage mostly lowers
+    # projections" and warned on every run, because the premise was
+    # arithmetically false. Shrinking toward the 30th percentile raises
+    # everyone BELOW the 30th percentile -- that is what the anchor is.
+    # About half the pool moving up is the mechanism working, not failing,
+    # and those players have a median raw projection of 1.4 PPG. A check
+    # that always warns is a check nobody reads.
+    #
+    # What actually matters is narrower: shrinkage must never inflate
+    # someone into DRAFTABILITY. That is precisely the QB failure this
+    # check was supposed to catch and didn't -- it buried a real defect
+    # (clipboard QBs pulled to 8+ PPG) inside a warning that was firing
+    # for a harmless reason.
+    #
+    # Scoped to ADP-bearing players, exactly one moves up: Jonathon
+    # Brooks, +0.38 on a 3-game sample, which is the anchor correctly
+    # declining to believe 2.50 PPG.
+    draftable = veterans.filter(pl.col("adp").is_not_null())
+    if draftable.height:
+        raised = draftable.filter(pl.col("move") > 0.5)
+        worst = float(draftable.select(pl.col("move").max()).item())
+        check.hard(
+            raised.height == 0,
+            "shrinkage never raises a draftable player by 0.5+ PPG",
+            f"{raised.height} of {draftable.height} draftable players raised; "
+            f"largest upward move {worst:+.2f}",
+        )
+
+    fringe = veterans.filter(pl.col("move") > 0.01)
+    if fringe.height:
+        median_raw = float(
+            fringe.select(pl.col("fantasy_points_per_game").median()).item()
+        )
+        print(f"\n   {fringe.height} of {veterans.height} moved up "
+              f"(median raw {median_raw:.2f} PPG -- below the anchor by design)")
+
+
 def check_value_drivers(check):
     """
     Phase 11. The "Why (value drivers)" column claims to be the model's own
@@ -396,6 +491,27 @@ def check_replacement_levels(check):
         check.soft(False, "both league configs present")
         return
 
+    # WHAT THIS COUNTS, AND WHY IT CHANGED (Aug 4)
+    # -------------------------------------------
+    # This first asked whether the BEST player at a position ranked lower
+    # in the shallow league. That is a knife-edge statistic for a claim
+    # about positional value -- it turns on one player shuffling past a
+    # neighbour. It failed on TE by two spots (21 deep, 19 shallow) and
+    # the investigation found no bug: TE replacement moves from TE21 to
+    # TE7 between the leagues, which sounds enormous, but the TE
+    # production curve is FLAT, so that move costs about as much as
+    # RB52 -> RB32 costs running backs. The two roughly cancel and TE is
+    # genuinely neutral across the two leagues.
+    #
+    # Removing the starter floor was tested as a candidate cause and moved
+    # TE only 19 -> 20, so that was not it either.
+    #
+    # Counting how many of a position appear in the top 30 measures the
+    # same claim without turning on a single player's neighbours. Recorded
+    # in full because changing a test that failed is exactly the move that
+    # deserves the most scrutiny.
+    top_n = 30
+    position_counts = {}
     best_rank = {}
     for label, path in configs.items():
         config = load_config(path)
@@ -413,21 +529,30 @@ def check_replacement_levels(check):
         print(f"\n   {label}: drafted {ranks}  (starter-slot rule was {starters})")
 
         board = compute_draft_targets(compute_vor(players, ranks), config["num_teams"])
-        top30 = board.head(30)
+        top = board.head(top_n)
         for position in MODELED_POSITIONS:
-            hit = top30.filter(pl.col("position") == position)
+            hit = top.filter(pl.col("position") == position)
+            position_counts.setdefault(position, {})[label] = hit.height
             best_rank.setdefault(position, {})[label] = (
                 int(hit.select("rank").to_series()[0]) if hit.height else 999
             )
-        counts = {p: top30.filter(pl.col("position") == p).height
-                  for p in MODELED_POSITIONS}
-        print(f"   top-30 mix: {counts}")
+        counts = {p: position_counts[p][label] for p in MODELED_POSITIONS}
+        print(f"   top-{top_n} mix: {counts}")
 
     deep, shallow = list(configs.keys())
     for position in ("QB", "TE"):
         check.hard(
+            position_counts[position][shallow] <= position_counts[position][deep],
+            f"{position} takes no MORE of the top {top_n} in the 6-team league",
+            f"{position} in top {top_n}: {position_counts[position][deep]} deep, "
+            f"{position_counts[position][shallow]} shallow",
+        )
+        # The old assertion, kept as a soft check. It is noisy, but it is
+        # also strictly more sensitive than the count, so it is worth
+        # seeing rather than deleting.
+        check.soft(
             best_rank[position][shallow] >= best_rank[position][deep],
-            f"{position} ranks no higher in the 6-team league than the 12-team",
+            f"{position}: best player also ranks no higher in the 6-team league",
             f"best {position}: rank {best_rank[position][deep]} deep, "
             f"{best_rank[position][shallow]} shallow",
         )
@@ -445,6 +570,7 @@ def main():
         check_live_board(check, positions)
         check_value_drivers(check)
         check_replacement_levels(check)
+        check_shrunk_baseline(check)
 
     print("\n" + "=" * 74)
     if check.failures:

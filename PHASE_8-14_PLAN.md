@@ -1184,6 +1184,137 @@ PUP/NFI, and it is real work rather than a constant.
 board's rookie ranks are its least-evidenced output and its largest disagreements with
 the market, and now the reason is written down.
 
+### Phase 13 extended — posrank bake-off and the cut-feature audit (Aug 7)
+
+Two questions, both answered NO CHANGE, and the second one turned up something about
+the gate itself.
+
+**Posrank: level, promotion, or both?** Jack's objection was sharp — why should a back
+who was RB1 last year and is RB1 again be paid for it, when the model predicts *change*
+from his own baseline?
+
+| variant | RB | WR | TE |
+|---|---|---|---|
+| neither | +0.326 | **+0.371** | **+0.116** |
+| level (shipped) | **+0.425** | +0.149 | +0.076 |
+| promotion | +0.398 | +0.381 | +0.074 |
+| both | +0.406 | +0.149 | +0.074 |
+
+**The level wins at RB and strictly dominates**: better than promotion alone, and adding
+promotion *to* it makes it worse. So they are not complements. The explanation is the
+one the level always had — the baseline is a **three-year weighted average**, so a
+current RB1 who spent 2023–24 as RB2 has a baseline that understates his role and should
+beat it. A year-over-year promotion flag cannot see that multi-year drift. The objection
+was reasonable and the answer is that the level already contains the promotion signal
+plus something else. Shipped spec unchanged at every position.
+
+**The audit: was anything cut wrongly?** Six features removed on in-sample p-values
+alone, re-tested out of sample. **Nothing was.** Two long-open questions close:
+
+- **`age_squared` is dead** (−0.034 / −0.001 / −0.000 forced in). Carried from Phase 10
+  as an open question about a flat tail resting on 57 backs over 30. Answered.
+- **`experience` is dead** (−0.032 at TE). Confirms `age` was the right replacement on
+  evidence rather than on AIC.
+
+`returning_oline_starters`, `coach_changed` and the `qb_changed` control were all inside
+noise — and the control behaving correctly is what made the one hit worth chasing.
+
+**The audit half-failed on its first run, in the now-familiar way.** It added each
+candidate and let alpha decide. When alpha rejected a feature in every fold the model
+never changed, the score came back `+0.0000`, and four of six candidates were never
+actually tested while appearing to have "no effect." That made the audit circular — it
+used alpha to decide whether to test a feature, when alpha is the mechanism under
+suspicion. Fixed with a second column that forces every term in at `alpha=1.0`.
+
+### The gate's three folds are a window, and it nearly cost us (Aug 7)
+
+The forced audit produced exactly one hit: `continuity_score` at RB, **+0.0332**. Against
+the 0.0121 spread of the other seventeen tests that is 2.7 standard deviations — but
+across eighteen tests the family-wise chance of one noise draw that big is **≈0.05**, and
+the churn band it cleared had no multiple-testing correction in it. So: probe it on all
+nine folds instead of three.
+
+    2017 -0.085   2018 +0.008   2019 +0.000   2020 -0.037   2021 +0.017
+    2022 -0.031   2023 +0.032   2024 +0.041   2025 +0.027
+    mean -0.0031   sd 0.0405
+
+**The gate's three seasons are the three best folds in the set.** On all nine the feature
+is dead. Not reinstated.
+
+**The uncomfortable part is not about `continuity_score`.** `GATE_SEASONS` is always
+2023/2024/2025, and the fold-to-fold spread here is **0.041 — larger than most of the
+effect sizes currently shipping.** Every feature in the model passed a three-fold test
+that this example shows can be window-dependent.
+
+That does not mean the model is wrong; it means the gate is weaker evidence than it has
+been treated as. Running it at nine folds is free information and is the obvious next
+check. Whether the gate should PERMANENTLY use nine is a real trade — recent seasons
+resemble 2026 most, and a feature that only works post-2022 might be a regime change
+rather than noise — but that argument should be had after seeing the numbers, not
+instead of seeing them.
+
+### Nine-fold gate diagnostic — the veteran model holds (Aug 7)
+
+Ran the gate across all nine seasons rather than the usual three. **The veteran model
+passes everywhere**, and by a wider margin than the three-fold number suggested:
+
+| position | 9-fold mean | positive folds |
+|---|---|---|
+| veteran RB | **+0.306** | 8/9 |
+| veteran WR | **+0.259** | 9/9 |
+| veteran TE | **+0.134** | 8/9 |
+
+`pos_rank` at RB — the newest and least-tested feature, and the one that moved Tuten and
+pushed RBs to 31 of the 12-team top 60 — is positive in 8 of 9 folds including 2017 and
+2019. It is not a post-2022 artifact. That was the specific worry and it is answered.
+
+**Rookie TE failed, and then the failure turned out to be the gate's arithmetic.**
+
+    season  2025  2024  2023  2022  2021  2020  2019  2018  2017
+    n_test    10     7     9    11     7     3     5    11     6
+    gain    +.36  +.34  +.17  +.23  +.23  -.53  -.68  +.45  -.79
+
+**All three negative folds are the three smallest.** The gate averaged per-fold RMSE
+gains, which weights a 3-player fold exactly as heavily as an 11-player one — harmless
+for veterans, whose folds run 71–137 rows, and decisive here:
+
+    unweighted mean of folds   -0.0260   fails
+    pooled by test-set size    +0.0981   passes
+
+An RMSE computed on three tight ends is one unlucky player. The gate now **pools squared
+errors** across folds instead of averaging RMSEs — `rmse² × n` is a fold's sum of squared
+errors, so summing those and dividing by total n gives the RMSE over all held-out players
+at once, which is what anyone reading the number assumes it already was.
+
+**Stated plainly because it flipped a verdict:** the fix was not chosen because rookie TE
+failed. Equal-weighting folds of wildly unequal size is wrong whichever direction it
+lands, and it would have been just as wrong if it had let something through. It only
+became visible because the nine-fold run created folds small enough for it to matter.
+
+Also fixed: the diagnostic printed `Wrote data/holdout_gate.json` while correctly not
+writing it. The file was untouched, but a message that says it wrote something it did not
+is the kind of thing that gets believed later.
+
+**Gate stays at three folds by default.** Recent seasons resemble 2026 most, and
+`--gate-seasons all` now exists for anything marginal. The three-fold gate is no longer
+being treated as stronger evidence than it is.
+
+**Both gates pass after the fix.** Nine folds, pooled over every held-out player:
+
+| model | pooled gain | held-out players | unweighted mean |
+|---|---|---|---|
+| veteran RB | **+0.318** | 711 | +0.306 |
+| veteran WR | **+0.260** | 1145 | +0.259 |
+| veteran TE | **+0.142** | 616 | +0.134 |
+| rookie TE | **+0.130** | 69 | **−0.026** |
+
+The last column is the point. For the three veteran positions, pooling and averaging
+agree to within 0.01 — fold sizes are near-equal so the choice never mattered. For rookie
+TE, with folds of 3 to 11, it is the difference between shipping and cutting.
+
+**The model is now validated on 2,541 held-out player-seasons across nine years**, which
+is a materially stronger claim than the three-fold gate supported this morning.
+
 ### Phase 13 CP1 — the Tuten test, and what it cost to run (Aug 6)
 
 **Question:** the board ranks Bhayshul Tuten ~150th against an ADP of 51, with every

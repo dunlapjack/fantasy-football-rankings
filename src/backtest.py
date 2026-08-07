@@ -295,6 +295,34 @@ def build_backtest_season(target_season):
         pl.col("pos_rank").is_null().alias("depth_chart_missing")
     )
 
+    # PROMOTION, not position. Jack's critique of the shipped pos_rank,
+    # and it is a good one: why should a back who was RB1 last year and
+    # is RB1 again get paid for it?
+    #
+    # The level has a defence -- the baseline is a THREE-YEAR weighted
+    # average, so a current RB1 whose 2023-24 were spent as RB2 really
+    # should beat his own trailing number, and that is information the
+    # level carries and the change does not. But "did he get promoted"
+    # is the cleaner statement of the same idea, and which one predicts
+    # better is a question, not an argument.
+    #
+    # Sign convention: rank 3 -> rank 1 gives -2, so NEGATIVE is a
+    # promotion. Expect a negative coefficient if promotions help, which
+    # reads the same direction as the level's.
+    #
+    # Nulls are their own category and get an indicator rather than a
+    # zero: a player with no prior-season chart entry (rookie last year,
+    # missed the season, changed teams into a chart that did not list
+    # him) has not been "unchanged", he is unmeasured.
+    prior_depth = depth_chart_rank(reference_season).rename(
+        {"pos_rank": "pos_rank_prior"}
+    )
+    combined = combined.join(prior_depth, on="player_id", how="left").with_columns([
+        (pl.col("pos_rank") - pl.col("pos_rank_prior")).alias("pos_rank_change"),
+    ]).with_columns(
+        pl.col("pos_rank_change").is_null().alias("pos_rank_change_missing")
+    )
+
     # Phase 11 B (CP5). `delta` is now measured against the SHRUNK
     # baseline, because that is what the live board projects from. Fitting
     # against the raw baseline and applying against the shrunk one would

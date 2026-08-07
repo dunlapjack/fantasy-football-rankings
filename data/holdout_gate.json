@@ -8,28 +8,34 @@
   "alpha": 0.1,
   "failures": [],
   "position_mean_gain": {
-    "veteran/RB": 0.42536798576787405,
-    "veteran/WR": 0.37132145629391006,
-    "veteran/TE": 0.116208929876546,
-    "rookie/TE": 0.290729257268109
+    "veteran/RB": 0.4508723098129188,
+    "veteran/WR": 0.3679963183392103,
+    "veteran/TE": 0.11863209853665113,
+    "rookie/TE": 0.28101645240784556
   },
   "feature_mean_gain": {
-    "veteran/RB/workload_share": 0.12190322916874956,
-    "veteran/RB/age": 0.06410253462910835,
-    "veteran/RB/usage_trend_share": 0.032789517103399834,
-    "veteran/RB/trend_missing": 0.025563447731978457,
-    "veteran/RB/position_competition_ppg": 0.04049007134932007,
-    "veteran/RB/pos_rank": 0.09428823899768683,
-    "veteran/RB/depth_chart_missing": 0.02204103134792179,
-    "veteran/WR/team_changed": 0.025983477906914427,
-    "veteran/WR/workload_share": 0.030529701504584672,
-    "veteran/WR/recent_major_injury": 0.025926540598032528,
-    "veteran/WR/age": 0.16573880358492202,
-    "veteran/TE/workload_share": 0.011114624338008028,
-    "veteran/TE/age": 0.029829621339821994,
-    "veteran/TE/usage_trend_share": 0.0306948411578567,
-    "veteran/TE/trend_missing": -0.0028350006417889873,
-    "veteran/TE/position_competition_ppg": 0.016177522505005815,
-    "rookie/TE/age": 0.290729257268109
+    "veteran/RB/workload_share": 0.14020176786520766,
+    "veteran/RB/age": 0.06063848501504232,
+    "veteran/RB/usage_trend_share": 0.03151150407468384,
+    "veteran/RB/trend_missing": 0.027195896437221645,
+    "veteran/RB/position_competition_ppg": 0.03943136734722463,
+    "veteran/RB/pos_rank": 0.10238471570596186,
+    "veteran/RB/depth_chart_missing": 0.02380562254832652,
+    "veteran/WR/team_changed": 0.026850662978728845,
+    "veteran/WR/workload_share": 0.03022751889525299,
+    "veteran/WR/recent_major_injury": 0.02763070791761235,
+    "veteran/WR/age": 0.16194641167726775,
+    "veteran/TE/workload_share": 0.008825145389279587,
+    "veteran/TE/age": 0.0345605800073967,
+    "veteran/TE/usage_trend_share": 0.030121575398116995,
+    "veteran/TE/trend_missing": -0.00257789888684945,
+    "veteran/TE/position_competition_ppg": 0.01793894418194064,
+    "rookie/TE/age": 0.28101645240784556
+  },
+  "held_out_players": {
+    "veteran/RB": 239,
+    "veteran/WR": 396,
+    "veteran/TE": 216,
+    "rookie/TE": 26
   }
 }

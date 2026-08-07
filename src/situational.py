@@ -901,6 +901,15 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
     # available information rather than a leak.
     depth = depth_chart_rank(upcoming_season, live=True)
 
+    # Prior-season chart, for the promotion feature. Same asymmetry the
+    # level already carries and for the same reason: the current-season
+    # term is an August snapshot live and a week-1 snapshot in the
+    # backtest. The PRIOR term is week-1 in both, so the change inherits
+    # exactly one season's worth of that gap rather than two.
+    prior_depth = depth_chart_rank(max(seasons)).rename(
+        {"pos_rank": "pos_rank_prior"}
+    )
+
     injury_flag = compute_recent_injury_flag(seasons)
 
     workload_share = compute_workload_share(veteran_features, tendency)
@@ -919,9 +928,10 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
         .join(age, on="player_id", how="left")
         .join(usage_trend, on="player_id", how="left")
         .join(team_changed, on="player_id", how="left")
-        .pipe(_join_all, competition_variants + [depth])
+        .pipe(_join_all, competition_variants + [depth, prior_depth])
         .with_columns([
             pl.col("pos_rank").is_null().alias("depth_chart_missing"),
+            (pl.col("pos_rank") - pl.col("pos_rank_prior")).alias("pos_rank_change"),
             pl.col("recent_major_injury").fill_null(False),
             pl.col("team_changed").fill_null(True),
             # No usable seasons at all (rookies, and veterans whose every
@@ -931,6 +941,12 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
             pl.col("trend_missing").fill_null(True),
             pl.col("trend_low_confidence").fill_null(False),
         ])
+        # Second pass: pos_rank_change only exists after the expression
+        # above evaluates, so its missing-indicator cannot be built in
+        # the same with_columns block.
+        .with_columns(
+            pl.col("pos_rank_change").is_null().alias("pos_rank_change_missing")
+        )
         .with_columns(
             # workload_share is carries(or targets)/game measured against the
             # player's CURRENT team's pass/rush attempts per game -- but the

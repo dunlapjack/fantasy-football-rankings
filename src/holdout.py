@@ -363,10 +363,27 @@ GATE_PATH = PROJECT_ROOT / "data" / "holdout_gate.json"
 
 # Folds the gate runs. Three is the minimum that lets "failed once" be
 # told apart from "fails".
+#
+# THESE THREE ARE A WINDOW, NOT A SAMPLE (found Aug 7). Probing
+# `continuity_score` at RB across all nine seasons returned:
+#
+#   2017 -0.085  2018 +0.008  2019 +0.000  2020 -0.037  2021 +0.017
+#   2022 -0.031  2023 +0.032  2024 +0.041  2025 +0.027
+#
+# The gate's three seasons are the three BEST folds in the set. On three
+# folds the feature scored +0.033 and looked reinstatable; on nine it is
+# -0.003 and dead. The fold-to-fold spread is 0.041 -- larger than most
+# of the effect sizes currently shipping.
+#
+# Kept at three by default because recent seasons resemble 2026 most,
+# but `--gate-seasons all` runs every fold and is the honest check on
+# anything marginal. A feature that passes three and fails nine is not
+# necessarily wrong -- it may be a real post-2022 change in how backs
+# and receivers are used -- but you should know which kind you have.
 GATE_SEASONS = [2025, 2024, 2023]
 
 
-def run_gate(alpha):
+def run_gate(alpha, seasons=None, write=True):
     """
     Runs every fold and decides, by rule, whether the current feature
     specs are allowed to ship.
@@ -389,29 +406,65 @@ def run_gate(alpha):
     """
     import json
 
+    seasons = seasons or GATE_SEASONS
     everything = []
-    for season in GATE_SEASONS:
+    for season in seasons:
         for name in ("veteran", "rookie"):
             everything.extend(
                 (name, season, r) for r in run_model(name, season, alpha)
             )
 
+    # POOLED BY TEST-SET SIZE, NOT AVERAGED ACROSS FOLDS (fixed Aug 7).
+    #
+    # The first version took the mean of per-fold RMSE gains, which gives
+    # a 3-player fold the same weight as an 11-player one. That is
+    # harmless for veterans, whose folds run 71-137 rows and are near
+    # enough equal. It is decisive for rookie TE, whose nine folds run
+    # 3 to 11:
+    #
+    #   the three NEGATIVE folds are the three SMALLEST (n=3, 5, 6)
+    #   unweighted mean  -0.0260   -> fails the gate
+    #   pooled by size   +0.0981   -> passes comfortably
+    #
+    # An RMSE computed on three players is one unlucky tight end. Pooling
+    # squared errors is the arithmetic the metric already implies --
+    # rmse^2 * n IS that fold's sum of squared errors, so summing those
+    # and dividing by total n gives the RMSE over all held-out players at
+    # once, which is the number anyone thinks they are reading.
+    #
+    # This flipped a real verdict, so it is worth being explicit: the fix
+    # was NOT chosen because rookie TE failed. Equal-weighting folds of
+    # wildly unequal size is wrong whichever way it happens to land, and
+    # it would be just as wrong if it had let something through.
     position_scores, feature_scores = {}, {}
     for name, _season, result in everything:
         key = f"{name}/{result['position']}"
-        gain = result["scores"]["LEVEL"]["rmse"] - result["scores"]["MODEL"]["rmse"]
-        position_scores.setdefault(key, []).append(gain)
+        n = result["n_test"]
+        position_scores.setdefault(key, []).append(
+            (n, result["scores"]["LEVEL"]["rmse"], result["scores"]["MODEL"]["rmse"])
+        )
         for feature, values in result["ablation"].items():
             feature_scores.setdefault(f"{key}/{feature}", []).append(
-                values["rmse_gain_from_feature"]
+                (n, values["rmse_without"], result["scores"]["MODEL"]["rmse"])
             )
 
+    def pooled_gain(rows):
+        """RMSE over every held-out player at once, worse-predictor minus
+        model. `rmse^2 * n` is a fold's sum of squared errors."""
+        total = sum(n for n, _, _ in rows)
+        if not total:
+            return 0.0
+        worse = np.sqrt(sum(n * a * a for n, a, _ in rows) / total)
+        model = np.sqrt(sum(n * b * b for n, _, b in rows) / total)
+        return float(worse - model)
+
     failures = []
-    for key, gains in sorted(position_scores.items()):
-        mean = sum(gains) / len(gains)
+    for key, rows in sorted(position_scores.items()):
+        mean = pooled_gain(rows)
         if mean <= 0:
             failures.append(f"{key}: features add nothing out of sample "
-                            f"(mean {mean:+.4f} RMSE over {len(gains)} folds)")
+                            f"(pooled {mean:+.4f} RMSE over "
+                            f"{sum(n for n, _, _ in rows)} held-out players)")
     # Missing-indicator companions are exempt from the FEATURE rule.
     #
     # They are not in the model to predict; they are there so an imputed
@@ -427,28 +480,40 @@ def run_gate(alpha):
     # Had it failed at -0.15 the right response would have been to
     # question the imputation, not to exempt the indicator.
     companions = set(veteran.IMPUTATION_COMPANIONS.values())
-    for key, gains in sorted(feature_scores.items()):
+    for key, rows in sorted(feature_scores.items()):
         if key.rsplit("/", 1)[-1] in companions:
             continue
-        mean = sum(gains) / len(gains)
+        mean = pooled_gain(rows)
         if mean < 0:
             failures.append(f"{key}: hurts out of sample "
-                            f"(mean {mean:+.4f} RMSE over {len(gains)} folds)")
+                            f"(pooled {mean:+.4f} RMSE over "
+                            f"{sum(n for n, _, _ in rows)} held-out players)")
 
     payload = {
         "passed": not failures,
-        "seasons": GATE_SEASONS,
+        "seasons": seasons,
         "alpha": alpha,
         "failures": failures,
-        "position_mean_gain": {k: sum(v) / len(v) for k, v in position_scores.items()},
-        "feature_mean_gain": {k: sum(v) / len(v) for k, v in feature_scores.items()},
+        "position_mean_gain": {k: pooled_gain(v) for k, v in position_scores.items()},
+        "feature_mean_gain": {k: pooled_gain(v) for k, v in feature_scores.items()},
+        "held_out_players": {
+            k: sum(n for n, _, _ in v) for k, v in position_scores.items()
+        },
     }
-    GATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(GATE_PATH, "w") as f:
-        json.dump(payload, f, indent=2)
+
+    # A diagnostic run must NOT overwrite the gate the boards check
+    # against. Writing a 9-fold result to the same file would replace the
+    # record of what the shipped model was validated on -- and if the
+    # diagnostic failed, it would also block every build until someone
+    # re-ran the 3-fold version, turning "let us look at something" into
+    # an outage.
+    if write:
+        GATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(GATE_PATH, "w") as f:
+            json.dump(payload, f, indent=2)
 
     print(f"\n\n{'=' * 74}")
-    print(f"GATE  --  folds {GATE_SEASONS}")
+    print(f"GATE  --  folds {seasons}" + ("" if write else "   [DIAGNOSTIC, not written]"))
     print(f"{'=' * 74}")
     if failures:
         print(f"  FAILED. {len(failures)} item(s) have no out-of-sample value:\n")
@@ -458,8 +523,12 @@ def run_gate(alpha):
         print(f"  build until this passes.")
     else:
         print("  PASSED. Every shipped position beats a constant and every shipped")
-        print("  feature earns its slot, averaged across folds.")
-    print(f"\n  Wrote {GATE_PATH}")
+        print("  feature earns its slot, pooled over every held-out player.")
+    if write:
+        print(f"\n  Wrote {GATE_PATH}")
+    else:
+        print(f"\n  DIAGNOSTIC ONLY -- {GATE_PATH.name} was NOT written, and the "
+              f"gate the boards check against is unchanged.")
     return 0 if payload["passed"] else 1
 
 
@@ -472,10 +541,23 @@ def main():
     parser.add_argument("--gate", action="store_true",
                         help="run all folds and write data/holdout_gate.json; "
                              "exits non-zero if anything shipped fails")
+    parser.add_argument("--gate-seasons", type=str, default=None,
+                        help="'all' to run every season as a fold. Diagnostic "
+                             "only -- does NOT write the gate file, so it "
+                             "cannot block builds or overwrite the record of "
+                             "what the shipped model was validated on.")
     args = parser.parse_args()
 
-    if args.gate:
-        raise SystemExit(run_gate(args.alpha))
+    if args.gate or args.gate_seasons:
+        seasons = None
+        write = True
+        if args.gate_seasons:
+            df = veteran.load_backtest()
+            seasons = sorted(
+                df.select("season").unique().to_series().to_list(), reverse=True
+            )
+            write = False
+        raise SystemExit(run_gate(args.alpha, seasons, write))
 
     names = ["veteran", "rookie"] if args.model == "both" else [args.model]
     everything = []

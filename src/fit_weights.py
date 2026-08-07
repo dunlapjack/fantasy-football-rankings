@@ -267,12 +267,17 @@ FEATURE_SPECS = {
 
 # Features entered as deviations from the position mean. The mean is
 # written to the JSON so ranking.py can reproduce it.
-CENTERED_FEATURES = {"age"}
+# `age_squared` is listed so the audit's quadratic-age candidate is
+# tested on fair terms. Uncentered, it sits on a scale ~27x larger than
+# age and around a mean of ~700, which makes the intercept
+# uninterpretable and the two terms numerically nasty together. It is
+# never in a shipped spec; it only appears via feature_bakeoff.
+CENTERED_FEATURES = {"age", "age_squared"}
 
 # Features whose nulls are mean-imputed at FIT time rather than causing
 # the row to be dropped. Only for features with a paired missing
 # indicator in the spec -- otherwise imputation quietly invents data.
-IMPUTED_FEATURES = {"usage_trend_share", "pos_rank"}
+IMPUTED_FEATURES = {"usage_trend_share", "pos_rank", "pos_rank_change"}
 
 # Missing-indicator companions. If the key ships, the value ships with
 # it -- ALWAYS, regardless of its own p-value.
@@ -303,7 +308,11 @@ IMPUTED_FEATURES = {"usage_trend_share", "pos_rank"}
 # imputing without an indicator since Phase 10, against this file's own
 # stated rule, and nothing noticed because the rule lived in a comment
 # rather than in the code.
-IMPUTATION_COMPANIONS = {"usage_trend_share": "trend_missing"}
+IMPUTATION_COMPANIONS = {
+    "usage_trend_share": "trend_missing",
+    "pos_rank": "depth_chart_missing",
+    "pos_rank_change": "pos_rank_change_missing",
+}
 
 # Positions whose fitted intercept is a SELECTION artifact rather than a
 # fact about the position, and so ships as a relative adjustment only.
@@ -338,7 +347,7 @@ SUPPRESS_LEVEL_SHIFT = {"QB"}
 BOOL_COLUMNS = [
     "qb_changed", "coach_changed", "team_changed",
     "recent_major_injury", "trend_missing", "trend_low_confidence",
-    "depth_chart_missing",
+    "depth_chart_missing", "pos_rank_change_missing",
 ]
 
 

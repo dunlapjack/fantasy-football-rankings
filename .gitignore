@@ -251,6 +251,11 @@ data/*
 # Excel lock files (created while a workbook is open)
 ~$*
 
+# Scratch file for long commit messages (`git commit -F COMMIT_MSG.txt`).
+# Ignored because `git add -A` cheerfully committed one on Aug 6 -- the
+# Remove-Item that was supposed to clean it up ran AFTER the commit.
+COMMIT_MSG.txt
+
 # Superseded draft boards. Only the CURRENT model version stays in the
 # working tree -- older ones live in git history, where they can be
 # recovered without sitting next to the real one in a folder you open

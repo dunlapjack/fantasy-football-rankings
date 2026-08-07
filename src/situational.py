@@ -10,6 +10,12 @@ PLAYCALLER_PATH = PROJECT_ROOT / "playcaller_history.csv"
 OL_POSITIONS = ["C", "G", "T", "OL"]
 UPCOMING_SEASON = 2026
 
+# Declared here rather than imported from rookies.py: situational.py is
+# upstream of rookies in the dependency order, and depth_chart_rank()
+# below needs it. Same list, deliberately duplicated rather than
+# inverting an import to save four strings.
+OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
+
 # --- Phase 10 CP1: usage trend -------------------------------------------
 # Positions with a meaningful opportunity share. QB is excluded for the
 # same reason it is in workload_share.
@@ -279,6 +285,168 @@ def compute_oline_continuity(seasons, current_rosters):
     return returning_counts
 
 
+# Competition definitions computed alongside the incumbent. Kept in step
+# with backtest.COMPETITION_TOP_K -- if the two ever disagree, a feature
+# fitted in the backtest would be missing from the live table.
+COMPETITION_TOP_K = [1, 2, 3]
+
+
+def _join_all(table, frames, on="player_id"):
+    """Left-joins a list of frames. A loop, named, so the join chains
+    above stay readable instead of growing a clever one-liner."""
+    for frame in frames:
+        table = table.join(frame, on=on, how="left")
+    return table
+
+
+def depth_chart_rank(season, live=False):
+    """
+    Each offensive player's depth chart rank, keyed by player_id.
+
+    MOVED HERE FROM rookie_backtest (Aug 6) so the VETERAN backtest can
+    use it too. It could not simply be imported: rookie_backtest imports
+    from backtest, so backtest importing rookie_backtest would close a
+    cycle. situational.py is upstream of both.
+
+    LOAD_DEPTH_CHARTS RETURNS TWO DIFFERENT SCHEMAS, permanently --
+    nflverse rebuilt the historical charts from a different source than
+    the live scrape:
+
+        historical   season, club_code, week, game_type, depth_team,
+                     position, depth_position, gsis_id, ...
+        live (2026)  team, dt, pos_abb, pos_rank, gsis_id, ...
+
+    `live=False` takes the EARLIEST snapshot of a completed season --
+    week 1 where the historical shape provides it, which is a dated,
+    pre-outcome moment. Reading a LATER snapshot of a finished season
+    would leak: by week 15 the depth chart has been rewritten by the
+    outcomes being predicted, so a breakout player reads rank 1 BECAUSE
+    he broke out.
+
+    `live=True` takes the most recent snapshot, which is correct for a
+    season that has not started.
+
+    THE ASYMMETRY THAT REMAINS, and it matters for how much to trust any
+    coefficient fitted on this: the historical feature is a week-1 chart,
+    taken AFTER final cuts. The live board reads an August chart, taken
+    BEFORE them. The fitted version therefore knows slightly more than
+    the applied version will, so treat a large coefficient here as an
+    optimistic ceiling.
+
+    The offensive-position filter and one-row-per-player de-dup are not
+    optional in either shape: a player who also returns kicks appears in
+    one snapshot as WR, KR and PR, and those rows fan out through every
+    downstream join keyed on player_id.
+    """
+    depth_charts = nfl.load_depth_charts(seasons=[season])
+    columns = set(depth_charts.columns)
+
+    if {"club_code", "depth_team"} <= columns:
+        frame = depth_charts.rename({"club_code": "team"})
+        if "game_type" in columns:
+            # Preseason charts list everyone in camp and order them by
+            # jersey number as often as by role.
+            frame = frame.filter(pl.col("game_type") == "REG")
+        frame = normalize_team_column(frame)
+
+        position_column = "position" if "position" in columns else "depth_position"
+        frame = frame.filter(pl.col(position_column).is_in(OFFENSE_POSITIONS))
+
+        chosen = frame.group_by("team").agg(
+            (pl.col("week").max() if live else pl.col("week").min()).alias("chosen")
+        )
+        return (
+            frame.join(chosen, on="team")
+            .filter(pl.col("week") == pl.col("chosen"))
+            .select([
+                pl.col("gsis_id").alias("player_id"),
+                pl.col("depth_team").cast(pl.Float64, strict=False).alias("pos_rank"),
+            ])
+            .unique(subset=["player_id"], keep="first")
+        )
+
+    chosen = depth_charts.group_by("team").agg(
+        (pl.col("dt").max() if live else pl.col("dt").min()).alias("chosen")
+    )
+    return (
+        depth_charts.join(chosen, on="team")
+        .filter(pl.col("dt") == pl.col("chosen"))
+        .filter(pl.col("pos_abb").is_in(OFFENSE_POSITIONS))
+        .select([
+            pl.col("gsis_id").alias("player_id"),
+            pl.col("pos_rank").cast(pl.Float64, strict=False),
+        ])
+        .unique(subset=["player_id"], keep="first")
+    )
+
+
+def compute_position_competition_top_k(player_team_table, k):
+    """
+    Phase 13 CP1. Competition as the mean of the TOP K other players at
+    the same position on the same team, rather than the mean of all of
+    them.
+
+    WHY THE MEAN-OF-ALL VERSION IS SUSPECT
+    --------------------------------------
+    It divides by every body on the roster at that position, so a
+    receiver on a team carrying six WRs -- three of whom are camp
+    filler projecting near zero -- reads as facing *less* competition
+    than one on a team carrying three real players. That is roster
+    length talking, not football, and it is the mechanism the plan
+    flagged when it noted the feature was dead from Phase 6 to Phase 10
+    and may only look alive now "because roster-length noise happens to
+    correlate with something real."
+
+    The plan's own scoping run put numbers on it: the DEFINITION choice
+    moves Gibbs by 1.3 PPG, while the actual roster event it was asked
+    about -- Montgomery out, Pacheco in -- moves him 0.16. Eight times
+    the football.
+
+    EXCLUDING SELF IS WHAT KEEPS IT SYMMETRIC, and it is why this is not
+    "the 2nd and 3rd string." For Gibbs the pool is Pacheco and Ozigbo;
+    for Pacheco the pool is Gibbs. A backup's competition IS the
+    starter, and any depth-chart-worded rule would zero that out for
+    every non-starter on the board.
+
+    k=1 is "how good is the best other guy," which is the sharpest
+    reading of a threat. Larger k trades sharpness for stability.
+    Nothing here decides which is right -- that is what the backtest and
+    the holdout gate are for.
+
+    Returns: player_id, position_competition_top{k}
+    """
+    grouped = (
+        player_team_table.group_by(["team", "position"])
+        .agg(
+            pl.struct(["player_id", "fantasy_points_per_game"])
+            .sort_by("fantasy_points_per_game", descending=True)
+            .alias("group_members")
+        )
+    )
+    joined = player_team_table.join(grouped, on=["team", "position"], how="left")
+
+    def top_k_excluding_self(row):
+        # Filtered by player_id rather than by value: two teammates with
+        # identical PPG are not the same person, and removing "a value"
+        # would silently drop the wrong one.
+        others = [
+            m["fantasy_points_per_game"]
+            for m in (row["group_members"] or [])
+            if m["player_id"] != row["player_id"]
+            and m["fantasy_points_per_game"] is not None
+        ]
+        top = others[:k]
+        # No teammates at all means no competition, which is 0.0 -- the
+        # same convention the mean-of-all version uses for a lone player.
+        return float(sum(top) / len(top)) if top else 0.0
+
+    return joined.with_columns(
+        pl.struct(["player_id", "fantasy_points_per_game", "group_members"])
+        .map_elements(top_k_excluding_self, return_dtype=pl.Float64)
+        .alias(f"position_competition_top{k}")
+    ).select(["player_id", f"position_competition_top{k}"])
+
+
 def compute_position_competition(player_team_table):
     """
     player_team_table must have columns: player_id, position, team,
@@ -286,6 +454,11 @@ def compute_position_competition(player_team_table):
 
     For each player, computes the average fantasy_points_per_game of
     their teammates at the same position, excluding themselves.
+
+    THE ORIGINAL DEFINITION, kept as the incumbent so the backtest can
+    fit it against the top-k variants on identical rows rather than
+    replacing it on argument. See compute_position_competition_top_k for
+    why it is suspected of measuring roster length.
 
     Returns: player_id, position_competition_ppg
     """
@@ -712,6 +885,22 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
     team_features = tendency.join(continuity, on="team", how="left").join(oline, on="team", how="left")
 
     position_competition = compute_position_competition(veteran_features)
+
+    # Phase 13 CP1. The live table must carry EVERY competition variant
+    # the backtest can fit, or a definition that wins the backtest would
+    # arrive at ranking.py as a null and be silently mean-imputed --
+    # which looks like the feature working and is not.
+    competition_variants = [
+        compute_position_competition_top_k(veteran_features, k)
+        for k in COMPETITION_TOP_K
+    ]
+
+    # Phase 13 CP1. Live depth chart for the upcoming season -- the
+    # applied half of the Tuten test. `live=True` takes the most recent
+    # snapshot, which for a season that has not started is the best
+    # available information rather than a leak.
+    depth = depth_chart_rank(upcoming_season, live=True)
+
     injury_flag = compute_recent_injury_flag(seasons)
 
     workload_share = compute_workload_share(veteran_features, tendency)
@@ -730,7 +919,9 @@ def build_situational_features(seasons, veteran_features, upcoming_season=UPCOMI
         .join(age, on="player_id", how="left")
         .join(usage_trend, on="player_id", how="left")
         .join(team_changed, on="player_id", how="left")
+        .pipe(_join_all, competition_variants + [depth])
         .with_columns([
+            pl.col("pos_rank").is_null().alias("depth_chart_missing"),
             pl.col("recent_major_injury").fill_null(False),
             pl.col("team_changed").fill_null(True),
             # No usable seasons at all (rookies, and veterans whose every

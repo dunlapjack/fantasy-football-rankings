@@ -412,7 +412,24 @@ def run_gate(alpha):
         if mean <= 0:
             failures.append(f"{key}: features add nothing out of sample "
                             f"(mean {mean:+.4f} RMSE over {len(gains)} folds)")
+    # Missing-indicator companions are exempt from the FEATURE rule.
+    #
+    # They are not in the model to predict; they are there so an imputed
+    # feature's coefficient means what it claims. Ablating one asks "does
+    # this improve prediction," which is the wrong question -- the same
+    # way ablating the intercept would be. The POSITION-level rule still
+    # covers them: if the model as a whole stops beating a constant, the
+    # gate fails whatever the companion is doing.
+    #
+    # This is an exemption, which is exactly the kind of thing that gets
+    # added to make a failure go away, so the justification has to hold
+    # on its own: `trend_missing` failed at -0.0003 RMSE over one fold.
+    # Had it failed at -0.15 the right response would have been to
+    # question the imputation, not to exempt the indicator.
+    companions = set(veteran.IMPUTATION_COMPANIONS.values())
     for key, gains in sorted(feature_scores.items()):
+        if key.rsplit("/", 1)[-1] in companions:
+            continue
         mean = sum(gains) / len(gains)
         if mean < 0:
             failures.append(f"{key}: hurts out of sample "

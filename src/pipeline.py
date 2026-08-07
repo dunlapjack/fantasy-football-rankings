@@ -8,7 +8,7 @@ from src.features import (
 from src.situational import build_situational_features
 from src.rookies import build_rookie_feature_table
 from src.adp import attach_adp
-from src.ranking import apply_situational_weights
+from src.ranking import apply_free_agents, apply_situational_weights
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "player_features.csv"
@@ -49,6 +49,13 @@ def build_player_feature_table(output_path=DEFAULT_OUTPUT_PATH):
     )
 
     full_table = attach_adp(full_table)
+
+    # BEFORE the weights are applied. A free agent's team-derived
+    # features have to be blanked while they can still change the
+    # adjustment -- doing it downstream in build_board would edit a
+    # column that nothing reads again.
+    full_table = apply_free_agents(full_table)
+
     full_table = apply_situational_weights(full_table)
 
     output_path = Path(output_path)

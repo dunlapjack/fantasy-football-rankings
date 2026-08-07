@@ -1000,13 +1000,40 @@ def compute_replacement_ranks(config, players):
     quarterbacks inside the top 30 go 4 -> 1 on the shallow board and
     1 -> 4 on the deep one.
     """
-    override = config.get("expected_drafted")
-    if override:
-        return {p: int(override[p]) for p in MODELED_POSITIONS if p in override}
-
     teams = config["num_teams"]
     rounds = config["total_rounds"]
     skill_picks = teams * rounds - teams * unmodeled_slots_per_team(config)
+
+    override = config.get("expected_drafted")
+    if override:
+        ranks = {p: int(override[p]) for p in MODELED_POSITIONS if p in override}
+        total = sum(ranks.values())
+
+        # A HAND-ENTERED OVERRIDE THAT DOES NOT SUM IS SILENTLY WRONG
+        # (Aug 6). These counts come off a real draft board, typed in by
+        # a human, and they replace the ADP machinery entirely -- so
+        # nothing downstream can notice if they are short or long. Ten
+        # missing picks would move replacement level at every position
+        # and shift every VOR on the board with no error anywhere.
+        #
+        # The counts describe a draft, and a draft has a known length.
+        # That makes this checkable, so it gets checked.
+        if total != skill_picks:
+            raise ValueError(
+                f"`expected_drafted` in {config['league_name']} sums to {total}, "
+                f"but this draft has {skill_picks} skill picks "
+                f"({teams} teams x {rounds} rounds"
+                + (f" minus {teams * unmodeled_slots_per_team(config)} for K/DST"
+                   if unmodeled_slots_per_team(config) else "")
+                + f").\n"
+                f"Counts: {ranks}\n"
+                f"A miscount here moves replacement level at every position and "
+                f"nothing downstream would notice. Fix the counts, or the roster "
+                f"if the league changed."
+            )
+
+        print(f"Replacement from OBSERVED draft results ({total} picks): {ranks}")
+        return ranks
 
     # SUPERFLEX / ADP-FORMAT NOTE (Aug 6). The position mix below is read
     # off whichever ADP feed select_adp_variant() installed, and for a
@@ -1590,7 +1617,25 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
     write_build_history(wb, output_path, config, build_note)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(output_path)
+    try:
+        wb.save(output_path)
+    except PermissionError:
+        # Excel holds an exclusive lock on an open workbook, so a rebuild
+        # over a board you are looking at dies with a bare traceback from
+        # deep inside zipfile. Harmless, and the least helpful possible
+        # moment for it: the one time this is guaranteed to happen is
+        # draft day, refreshing ADP with the board open on the other
+        # monitor and a pick clock running.
+        #
+        # Everything upstream has already succeeded by this point -- the
+        # model ran, the gate passed, replacement levels resolved. Only
+        # the file write failed, and re-running costs nothing.
+        raise SystemExit(
+            f"\nCannot write {output_path.name} -- it is open in Excel "
+            f"(or another program has it locked).\n"
+            f"Close it and re-run. Nothing else went wrong: the board built "
+            f"fine and only the save failed.\n"
+        ) from None
     return output_path
 
 
@@ -1632,14 +1677,20 @@ def write_build_history(workbook, output_path, config, build_note):
     sheet.cell(new_row, 6).alignment = Alignment(wrap_text=True, vertical="top")
 
 
-def build_board(features_path=FEATURES_PATH, output_path=None,
-                config_path=CONFIG_PATH, version=MODEL_VERSION, build_note=None,
-                skip_gate=False):
-    require_holdout_gate(skip=skip_gate)
+def prepare_board_frame(features_path, config, quiet=False):
+    """
+    Everything between player_features.csv and a ranked board, with no
+    spreadsheet involved.
 
-    config = load_config(config_path)
-    teams = config["num_teams"]
+    EXTRACTED FROM build_board() (Aug 6), and the reason is the same one
+    that came up three times today: anything that wants to inspect the
+    board has to get it from the code that builds the board, not from a
+    second implementation that agrees until it doesn't. `sanity_top_n`
+    calls this; so does build_board. There is one order of operations and
+    both see it.
 
+    Returns (board, replacement_ranks, starter_ranks).
+    """
     players = pl.read_csv(features_path).filter(
         pl.col("position").is_in(MODELED_POSITIONS)
     )
@@ -1671,8 +1722,9 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
              - pl.col("fantasy_points_per_game")).alias("baseline_shrink_delta")
         )
         moved = players.filter(pl.col("baseline_shrink_delta").abs() >= 0.5)
-        print(f"Baseline shrinkage: {moved.height} players moved by 0.5+ PPG")
-    else:
+        if not quiet:
+            print(f"Baseline shrinkage: {moved.height} players moved by 0.5+ PPG")
+    elif not quiet:
         print("NOTE: no shrunk baseline in player_features.csv -- "
               "re-run `python -m src.pipeline` to apply Phase 11 CP5.")
 
@@ -1680,11 +1732,26 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
 
     starter_ranks = compute_starter_ranks(config)
     replacement_ranks = compute_replacement_ranks(config, players)
-    print(f"Replacement ranks: {replacement_ranks} "
-          f"(was, by starter slots: {starter_ranks})")
+    if not quiet:
+        print(f"Replacement ranks: {replacement_ranks} "
+              f"(was, by starter slots: {starter_ranks})")
 
     board = compute_vor(players, replacement_ranks)
-    board = compute_draft_targets(board, teams)
+    board = compute_draft_targets(board, config["num_teams"])
+    return board, replacement_ranks, starter_ranks
+
+
+def build_board(features_path=FEATURES_PATH, output_path=None,
+                config_path=CONFIG_PATH, version=MODEL_VERSION, build_note=None,
+                skip_gate=False):
+    require_holdout_gate(skip=skip_gate)
+
+    config = load_config(config_path)
+    teams = config["num_teams"]
+
+    board, replacement_ranks, starter_ranks = prepare_board_frame(
+        features_path, config
+    )
 
     if output_path is None:
         output_path = PROJECT_ROOT / f"2026_{league_slug(config)}_Board_v{version}.xlsx"

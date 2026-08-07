@@ -1,0 +1,80 @@
+Phases 12-13: rookie model, first holdout validation, 32-team superflex
+
+The project's first out-of-sample test, and it cut most of two phases.
+
+HOLDOUT VALIDATION (Phase 13 CP2, src/holdout.py)
+Fit on everything except a season, predict that season, three folds
+(2023/2024/2025). Every R^2 this project had ever quoted was in-sample.
+Scores three predictors, not the two the plan specified: RAW (repeat your
+own baseline), LEVEL (a constant), MODEL. MODEL-vs-LEVEL is the number
+that matters -- a model of pure noise beats RAW on the intercept alone.
+
+Cut for failing out of sample, despite clearing alpha and, in two cases,
+leave-one-season-out as well:
+  - QB `age`  -- Phase 10's headline finding, p=0.020, sign-stable across
+    all nine LOSO folds. 1/3 folds, mean -0.023 RMSE. QBs now take no
+    adjustment, as from Phase 5 to Phase 9.
+  - WR `usage_trend_share` + `trend_missing` -- pre-registered in
+    fit_weights as "first to fall if the holdout disagrees." It did.
+  - RB `qb_changed`
+  - rookie RB and WR models -- rookie WR never cleared alpha in ANY
+    training fold; it is significant only when the test season is inside
+    the fit.
+  - rookie `pos_rank`, WR/TE `pos_rank`
+
+Surviving: veteran RB/WR/TE (+0.43/+0.37/+0.12 RMSE over a constant),
+rookie TE on `age` alone. `age` is the most valuable feature in the model
+by a factor of two.
+
+GATE
+`python -m src.holdout --gate` writes data/holdout_gate.json; build_board
+refuses to build without a pass. Fails three ways: missing, failed, or
+STALE (weights newer than the gate -- a green light for a model that no
+longer exists).
+
+PHASE 12 (src/rookie_backtest.py, fit_rookie_weights.py, verify_rookies.py)
+Rookie model on 2017-2025 classes. Two leakage guards: leave-one-class-out
+cohort baselines, and week-1 depth charts rather than end-of-season ones.
+Eight candidates tested, one survives (TE age). Landing spot does not
+measurably predict rookie outcomes -- outcomes swing 3-5 PPG around the
+cohort mean and five classes cannot resolve a one-point effect.
+
+The 2021 window floor turned out to rest on an unchecked assumption:
+depth chart coverage is fine back to 2017 (missing-rate spread 0.14).
+
+PHASE 13 CP1
+  - Competition definition bake-off: five definitions as five SEPARATE
+    models (collinear terms in one model mask each other). No change --
+    and the feature is worth only +0.043/+0.016/+0.009. The definition
+    debate moved individual players 1.3 PPG and predictions ~nothing.
+  - The Tuten test: depth chart rank ships at RB (+0.094 RMSE, -1.06 PPG
+    per place) and is cut at WR/TE. RB depth charts state touch
+    allocation; WR3 says little about targets.
+  - Magnitude stability ported from the rookie fitter after WR `pos_rank`
+    held its sign across nine folds and still tripled on one.
+  - Imputation companions are forced in with their partner and exempt
+    from the gate. Surfaced a live bug: TE had been imputing
+    usage_trend_share without an indicator since Phase 10.
+
+32-TEAM SUPERFLEX LEAGUE (league_config_32team.json)
+4-pt passing TDs, no K/DST, no keepers, 11 rounds. Four things that were
+silently wrong:
+  - UNMODELED_SLOTS_PER_TEAM hardcoded to 2 (K+DST) -- would have removed
+    64 picks from a draft that does not spend them.
+  - Every projection was in Lebron James scoring. rescore_for_league()
+    corrects exactly from stored per-game passing columns and RAISES on
+    any other differing key.
+  - 2QB ADP feed added; ppr is non-superflex and biased, not just noisy.
+  - Replacement extrapolation now uses the tail of the covered picks, not
+    the whole feed -- the old rule put QB replacement at QB63 in a league
+    with 32 starting quarterbacks.
+  Replacement now comes from an observed 32-team mock (352 picks).
+
+FIXES TO CHECKS THAT HAD DRIFTED FROM THE SHIPPING PATH
+Three instances of one bug, the third written while fixing the second:
+verifications that reimplement part of build_board instead of calling it.
+All now call it. prepare_board_frame() extracted so anything inspecting a
+board gets it from the code that builds one.
+
+MODEL_VERSION 12 -> 13. Rookie ranks move on all three boards, not just
+the new one.

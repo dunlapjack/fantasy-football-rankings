@@ -1143,6 +1143,145 @@ fitted. **QB ~36, still below `MIN_ROWS_TO_FIT = 40`.** Roughly four rookie
 quarterbacks per class clear `MIN_GAMES`, and nine classes does not fix that. TE is the
 position this stands to help; QB needs a different idea, not more of the same seasons.
 
+### The rookie haircut — asked twice, answered neither time (Aug 6)
+
+Phase 12's stated fallback was "fall back to the shrinkage haircut." Two attempts to
+size it, and **both instruments were wrong.** Recorded in full because a plausible
+number from a broken test is more dangerous than no number.
+
+**Attempt 1 — sweep λ in `projection = λ × cohort + (1−λ) × anchor`.** Result: λ=1.0
+wins, monotonically, RMSE rising from 3.79 to 5.46 as λ falls. Clean-looking and close
+to a mathematical necessity: the cohort baseline **is** the conditional mean of the very
+population being scored, so shrinking it toward anything else must raise its own RMSE
+unless it buys more variance than it costs in bias — and with 40–100 players per cohort
+cell there is little variance left to buy. A test that could only return one answer.
+
+**Attempt 2 — compare mean residuals, rookies vs veterans.** Gap of −0.057 PPG, which
+the script declared meaningful and it is not, for two independent reasons:
+
+- **The threshold was borrowed.** `MEANINGFUL_GAIN = 0.02` was chosen for RMSE churn in
+  the competition bake-off — different statistic, different units. Against residual SDs
+  of 3–5 PPG and n = 2775/415, the standard error on that gap is ≈0.21, so −0.057 is a
+  quarter of one standard error. Now compared against its own SE (|z| < 2) instead of a
+  constant carried in from elsewhere.
+- **Both sides are pinned near zero by construction.** OLS with an intercept forces the
+  veteran residual to equal mean(delta), which the situational adjustment then absorbs;
+  the rookie cohort baseline is the mean of its own cell. The comparison mostly measures
+  what two fitting procedures already flattened.
+
+**What the real question is.** Both baselines are estimated on players who cleared
+`MIN_GAMES = 8`, so each is *"expected PPG **given** you earn a role."* The board then
+applies them to everyone — which is far more forgiving to rookies, because a much larger
+share of them never earn the role. `rookie_backtest` kept **415 of 600** drafted rookies
+who took a snap, and rookies with no snap never entered that 600 at all.
+
+So the question is not "is the cohort mean biased" but **"what is P(earns a role) for a
+rookie versus a veteran, and does the board price the difference."** It does not. That is
+a playing-time model, adjacent to the `expected_games` machinery Phase 11 CP8 built for
+PUP/NFI, and it is real work rather than a constant.
+
+**Not to be attempted before Aug 22.** Handle rookies by judgement on draft day: the
+board's rookie ranks are its least-evidenced output and its largest disagreements with
+the market, and now the reason is written down.
+
+### Phase 13 CP1 — the Tuten test, and what it cost to run (Aug 6)
+
+**Question:** the board ranks Bhayshul Tuten ~150th against an ADP of 51, with every
+driver on him *positive*. He ranks low because his baseline is thin production. The
+market prices an expected 2026 role; the model prices demonstrated snaps and has no
+channel through which "he is the starter now" can reach a projection. Depth chart rank
+is the only pre-season, statistics-only signal that carries role information, and
+`FEATURE_SPEC.md` had ruled it "secondary tie-breaker only" — a decision, never tested.
+
+**Answer: it works at running back and nowhere else.**
+
+| pos | `pos_rank` ablation, mean of 3 folds | |
+|---|---|---|
+| **RB** | **+0.080** | ships, coefficient −1.06 PPG per place |
+| TE | −0.025 | cut |
+| WR | −0.224 | cut |
+
+Being RB1 rather than RB3 is worth ~2 PPG. That is the missing channel, and it exists at
+exactly the position Tuten plays. Why only there is a football answer: a running back
+depth chart is close to a declaration of touch allocation, while receivers rotate by
+package and a WR3 label says little about targets.
+
+**The WR failure is the more useful half.** `pos_rank` was sign-stable across all nine
+LOSO folds — −0.286, −0.319, −0.299, −0.306, −0.280, −0.301, −0.350, −0.305, and then
+**−0.886** on 2025. Same sign every time, so the sign-flip check waved it through, and
+the tripled coefficient took the entire WR model below a constant out of sample
+(−0.2516 RMSE).
+
+A magnitude-stability bar had existed in `fit_rookie_weights` since RB `age` failed it
+there, and had never been ported to the veteran fitter — for no better reason than that
+the veteran fit had not yet met a feature that needed it. Now ported, with one
+deliberate difference: **the rookie fitter drops unstable features, the veteran fitter
+reports them and lets the gate decide.** Two automatic droppers in sequence would be
+fitting the fold structure twice.
+
+**Ablation is conditional, and that nearly cost four good features.** The first gate run
+failed six items. Four of them — WR `workload_share` at −0.158, TE `workload_share`,
+WR `depth_chart_missing`, RB `trend_missing` — were measured *with the broken WR
+`pos_rank` still in the model*. Removing it returned WR `workload_share` to +0.028 /
++0.045 / +0.019. **A feature's ablation number is only meaningful against a model that
+is otherwise sound**, so a gate failure list should be worked one item at a time,
+worst first, not cut wholesale.
+
+**`trend_missing` is machinery, not a candidate.** It failed the gate at RB: cleared
+alpha in one fold of three, worth −0.0003 RMSE when it did. Cutting it would have been
+wrong — it exists so `usage_trend_share` (186 of 711 RB rows mean-imputed) can be told
+apart from "we do not know," and judging it by predictive ablation is the same category
+error as ablating an intercept.
+
+Subjecting it to alpha caused a real problem too: it flickered in and out across folds,
+so `usage_trend_share` did not mean the same thing in each one and the fold comparison
+the gate rests on was not comparing like with like. Companions are now forced in
+whenever their imputed partner ships, and exempted from the gate's feature rule.
+
+**That surfaced a live bug of its own.** TE has been shipping `usage_trend_share` with
+152 rows imputed and **no indicator** since Phase 10, because alpha cut `trend_missing`
+at p=0.68 — directly against this file's own stated rule. Nothing noticed, because the
+rule lived in a comment instead of in the code. It does not any more.
+
+**Gate passed, and the board moved.** Tuten goes #148 → #109 on the 12-team board with
+`+0.9 pos_rank` in his drivers. The gap that remains against his ADP of 51 is his
+15-game sample — the model saying "unproven," which is the part it should say.
+
+**The side effect that needs a human read: running backs went 25 → 31 of the
+12-team top 60.** The mechanism is sound. `pos_rank` pushes committee and handcuff backs
+down hard, so RB54 — the 12-team replacement — is now a materially worse player, and
+every real starter gains VOR against him. The 6-team board is **unchanged** at 26,
+because RB32 there is still a genuine starter and the effect has nowhere to bite. That
+divergence is the league-awareness machinery working exactly as designed.
+
+Sound mechanism, but 31 of 60 is a strategic claim, and CP5 exists for precisely this
+kind of call. Worth checking that the backs filling ranks 25-31 are ones you would
+actually take there.
+
+Worth noting `pos_rank` and `workload_share` are correlated by construction and pull in
+opposite directions at RB — "you have the job" against "your usage is already priced
+in." Both clear alpha with tight standard errors and both earn their slot on the
+holdout, so it is not degenerate, but it is the multicollinearity CP1 was told to look
+for and it is now on the record.
+
+### Competition definition bake-off — no change, and that is the finding (Aug 6)
+
+Five definitions per position, fitted as five separate models and scored on the same
+three folds. **Not** one model containing all five: they measure the same quantity, so
+in a single regression they mask each other, split one effect five ways, and hand the
+win to whichever way the noise fell. That failure would have looked exactly like a
+result.
+
+`ppg` — the incumbent mean-of-all-teammates — wins or ties everywhere, and top1/top2/top3
+land within 0.01 RMSE of it.
+
+**The more interesting number is `none`.** The whole feature is worth +0.043 at RB,
++0.016 at TE, +0.009 at WR. The Aug 4 scoping note found the definition choice was worth
+1.3 PPG on Gibbs against 0.16 for the actual roster move it was asked about — and that
+was true. But 1.3 PPG of *individual movement* buys essentially nothing in *predictive
+accuracy*. Those two things are far less related than a large coefficient suggests, and
+that is worth remembering the next time one looks impressive.
+
 ### Phase 13 CP2 — HOLDOUT VALIDATION, RUN AT LAST (Aug 6)
 
 Three folds: hold out 2025, 2024, 2023, refit on the rest, predict the held-out season.
@@ -1249,6 +1388,48 @@ The generalizable rule, and the one all three fixes encode: **a check that reimp
 part of the shipping path must call the shipping path.** It is the same principle
 `verify_adjustments` was founded on — run `ranking.apply_situational_weights`, not a
 restatement of it — applied one level out to the league-specific transforms.
+
+### Mock draft run — and it reverses the QB call (Aug 6)
+
+Roster corrected first: bench is **4**, not 3. 11 rounds, **352 skill picks**.
+
+A 32-team superflex mock was run with one human team and 31 autodrafters. Observed
+counts entered as `expected_drafted`, which retires the 42%-extrapolation warning
+entirely — replacement level on that board is now measured rather than guessed.
+
+| pos | model @352 | observed | diff | model share | observed share |
+|---|---|---|---|---|---|
+| QB | 47 | **59** | **+12** | 13.4% | **16.8%** |
+| RB | 98 | 92 | −6 | 27.8% | 26.1% |
+| WR | 154 | 145 | −9 | 43.8% | 41.2% |
+| TE | 53 | 56 | +3 | 15.1% | 15.9% |
+
+**Twelve of thirty-two first-round picks were quarterbacks.** The ADP-tail
+extrapolation implied ~13% of the draft would be QBs; the room took 16.8% overall and
+38% of round one.
+
+**This reverses the "don't pay superflex prices for QB" conclusion recorded above, and
+the reversal is instructive.** That call rested on replacement sitting at QB43, and
+QB43 came from extrapolating 42% of a draft off the last 40 picks of a non-superflex-
+adjacent feed. Replacement is now QB59 — a much worse quarterback, so every real one
+gains VOR — while RB and WR come out *shallower* than modelled and lose a little. Both
+effects push the same direction.
+
+The 4-point-passing-TD finding still stands on its own terms: an elite QB really does
+lose ~3 PPG against the 6-point scoring all superflex advice assumes. That was correct
+and it was half the equation. The replacement half was wrong, and it was the half
+resting on a guess the code was already warning about in capital letters.
+
+**Caveat that travels with these numbers:** 31 of 32 teams autodrafted, so this is the
+platform's superflex ADP behaviour, not a human room's. If the real league drafts live
+and engaged, the mix could move. It is still incomparably better evidence than the tail
+of a 12-team feed, and it is the first draft-behaviour data this project has ever had.
+
+`compute_replacement_ranks` now **raises** if `expected_drafted` does not sum to the
+draft's pick count. Hand-entered counts replace the ADP machinery entirely, so nothing
+downstream can notice if they are short or long — ten missing picks would move
+replacement at every position with no error anywhere. A draft has a known length, which
+makes this checkable, so it is checked.
 
 ### What the fix revealed: superflex barely lifts QB at 4 points (Aug 6)
 

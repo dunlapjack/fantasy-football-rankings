@@ -64,6 +64,101 @@ def load_situational_weights(path=WEIGHTS_PATH):
         return json.load(f)["positions"]
 
 
+INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
+
+# Features that describe a player's SITUATION rather than the player.
+# Nulled for anyone marked FREE_AGENT, so apply_situational_weights
+# imputes them to the position mean -- which is what "no opinion" should
+# mean.
+#
+# WHY THIS EXISTS (Aug 6). Brandon Aiyuk is unsigned and the model ranked
+# him as though rostered: `latest_team` still names his old club, so
+# `team_changed` read "same team", `workload_share` read his old usage,
+# and `position_competition_ppg` measured teammates he no longer has.
+# Every one of those is a confident statement about a situation that does
+# not exist.
+#
+# What survives is everything true of the PLAYER wherever he signs: age,
+# injury history, his own usage trajectory. A 28-year-old coming off IR
+# is a 28-year-old coming off IR whoever employs him in September.
+#
+# NOT the same as OUT_SEASON. An unsigned player will most likely play;
+# the model just cannot say where. Marking him out would be a lie in the
+# other direction and would hide him from the board entirely.
+FREE_AGENT_NULLED_FEATURES = [
+    "workload_share",
+    "position_competition_ppg",
+    "position_competition_top1",
+    "position_competition_top2",
+    "position_competition_top3",
+    "pos_rank",
+    "depth_chart_missing",
+    "team_changed",
+    "pass_att_pg",
+    "rush_att_pg",
+    "returning_oline_starters",
+    "qb_changed",
+    "coach_changed",
+]
+
+
+def apply_free_agents(player_features, path=INJURY_OVERRIDES_PATH):
+    """
+    Blanks team-dependent features for players marked FREE_AGENT in
+    injury_overrides.csv.
+
+    CALLED FROM pipeline.py, BEFORE apply_situational_weights, and that
+    placement is the whole point. The adjustment is computed in the
+    pipeline and written into player_features.csv; blanking a feature in
+    build_board afterwards would change a column nothing reads again. I
+    put it there first and it would have done exactly nothing.
+
+    Rides on injury_overrides.csv rather than a new file: both are
+    hand-maintained facts no feed can see, and one file to update before
+    a draft beats two to forget.
+
+    `team` itself is deliberately LEFT ALONE. Nulling it would fail the
+    "everyone has a team" sanity check and break joins keyed on it, for
+    no gain -- what matters is that no team-derived NUMBER reaches the
+    projection, and nulling the features achieves that directly.
+    """
+    if not path.exists():
+        return player_features
+
+    overrides = pl.read_csv(path)
+    if "status" not in overrides.columns:
+        return player_features
+
+    names = set(
+        overrides.filter(
+            pl.col("status").cast(pl.String).str.to_uppercase() == "FREE_AGENT"
+        ).select("player_name").to_series().to_list()
+    )
+    if not names:
+        return player_features
+
+    is_free_agent = pl.col("player_name").is_in(list(names))
+    present = [c for c in FREE_AGENT_NULLED_FEATURES if c in player_features.columns]
+
+    player_features = player_features.with_columns([
+        pl.when(is_free_agent).then(None).otherwise(pl.col(c)).alias(c)
+        for c in present
+    ])
+
+    matched = player_features.filter(is_free_agent).select("player_name").to_series().to_list()
+    print(f"Free agents: {len(matched)} of {len(names)} listed matched; "
+          f"{len(present)} team-derived features blanked")
+    for name in matched:
+        print(f"   {name}: age and injury history still apply, team context "
+              f"set to no-opinion")
+    missing = names - set(matched)
+    if missing:
+        print(f"   WARNING: nothing matched {sorted(missing)}. Check the spelling "
+              f"against player_features.csv -- an unmatched override is silent.")
+
+    return player_features
+
+
 def load_rookie_weights(path=ROOKIE_WEIGHTS_PATH):
     """
     Phase 12. Loads the rookie weights written by

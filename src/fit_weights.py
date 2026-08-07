@@ -79,6 +79,13 @@ MIN_GAMES = 8
 # contract_year in Phase 6, and cut Phase 9 outright.
 ALPHA = 0.10
 
+# Loosest defensible bar for leave-one-season-out MAGNITUDE stability: a
+# fold coefficient may sit between 1/3 and 3x the shipped value. Same
+# constant and same reasoning as fit_rookie_weights, where it was
+# introduced first. See the magnitude check in fit_position for the WR
+# `pos_rank` case that forced it into this file too.
+STABILITY_RATIO = 3.0
+
 # Per-position candidate feature sets. Adding a feature here is how you
 # test it -- fit, read the p-value, keep or cut.
 #
@@ -158,12 +165,85 @@ ALPHA = 0.10
 # Everything retained beats a constant in all three folds. `age` is the
 # most valuable feature in the model by ablation (+0.189 at RB, +0.161 at
 # WR), and RB/WR/TE as a whole clear LEVEL by +0.313 / +0.363 / +0.119.
+# PHASE 13 CP1 -- COMPETITION DEFINITION BAKE-OFF (Aug 6).
+#
+# `position_competition_ppg` averages EVERY teammate at the position,
+# so a receiver on a team carrying six WRs -- three of them camp filler
+# projecting near zero -- reads as facing less competition than one on a
+# team carrying three real players. That is roster length, not football.
+#
+# The plan sized this on Aug 4 and the number is the reason it is being
+# tested rather than argued about: the DEFINITION choice moves Gibbs by
+# 1.3 PPG, while the roster move it was asked about (Montgomery out,
+# Pacheco in) moves him 0.16. Eight times the football.
+#
+# THEY ARE NOT LISTED TOGETHER, AND THAT IS THE WHOLE METHOD.
+#
+# The obvious move is to put all four definitions in one spec and let
+# alpha choose. That is wrong, and wrong in a way that would have looked
+# like it worked: they are near-identical by construction, so they mask
+# each other. Four collinear terms split one effect four ways, every
+# p-value inflates, and the "winner" is whichever way the noise fell.
+# A model containing all four is not a bake-off between them, it is a
+# coin flip wearing a regression.
+#
+# Mutually exclusive DEFINITIONS of the same quantity get compared as
+# separate models on held-out error -- see src/competition_bakeoff.py,
+# which fits each position five times (one per definition, plus none)
+# and scores all five on the 2023/2024/2025 folds.
+#
+# `position_competition_ppg` stays here as the incumbent until that
+# bake-off names a replacement. Swap the name below; do not add to it.
+COMPETITION_DEFINITION = "position_competition_ppg"
+
+# PHASE 13 CP1 -- THE TUTEN TEST.
+#
+# The board ranks Bhayshul Tuten ~150th against an ADP of 51, with every
+# driver on him POSITIVE. He ranks low because his BASELINE is thin
+# production: the model prices demonstrated snaps, the market prices an
+# expected 2026 role, and the model has no channel through which "he is
+# the starter now" can reach a projection.
+#
+# Depth chart rank is the only pre-season, statistics-only signal that
+# carries role information. FEATURE_SPEC.md ruled it "secondary
+# tie-breaker only, not a primary weighted input" -- which was a
+# DECISION and was never tested. It is tested here.
+#
+# It failed for ROOKIES on the holdout, and that says nothing about
+# veterans: a rookie's chart position is a guess by a staff who have not
+# seen him play, a veteran's is a summary of what they concluded last
+# season. Different measurements sharing a name.
+#
+# `depth_chart_missing` is the required companion -- pos_rank is
+# mean-imputed and imputing without a missing indicator invents data.
+# Expect it to matter more here than it did for rookies: a veteran off
+# his team's chart is often unsigned, which is a real signal.
+# RESULT (Aug 6): IT WORKS AT RUNNING BACK AND NOWHERE ELSE.
+#
+#   RB   pos_rank ablation +0.080 mean over three folds, coefficient
+#        -1.06 PPG per depth-chart place. Kept. This is the channel that
+#        was missing -- being RB1 rather than RB3 is worth ~2 PPG, which
+#        is exactly the "he is the starter now" information the market
+#        prices and the model previously could not see.
+#   WR   -0.224. Catastrophic, and instructive: every leave-one-season-
+#        out fold sits near -0.30 except 2025, which lands at -0.886.
+#        Every fold shares a sign, so the sign-flip check waved it
+#        through, and the fitted coefficient then blew up the 2025
+#        holdout by a quarter of a point of RMSE. Cut.
+#   TE   -0.025. Cut.
+#
+# Why RB and not the others is a football answer rather than a
+# statistical one: a running back depth chart is close to a declaration
+# of touch allocation, while receivers rotate by package and personnel
+# and a WR3 label says little about targets.
+TUTEN_TEST = ["pos_rank", "depth_chart_missing"]
+
 FEATURE_SPECS = {
     "RB": ["workload_share", "age", "usage_trend_share",
-           "trend_missing", "position_competition_ppg"],
+           "trend_missing", COMPETITION_DEFINITION, *TUTEN_TEST],
     "WR": ["team_changed", "workload_share", "recent_major_injury", "age"],
     "TE": ["workload_share", "age", "usage_trend_share", "trend_missing",
-           "position_competition_ppg"],
+           COMPETITION_DEFINITION],
     # QB IS ABSENT, AND THAT IS A REVERSAL OF PHASE 10'S HEADLINE.
     #
     # "QB carries a weight for the first time in the project's history"
@@ -192,7 +272,38 @@ CENTERED_FEATURES = {"age"}
 # Features whose nulls are mean-imputed at FIT time rather than causing
 # the row to be dropped. Only for features with a paired missing
 # indicator in the spec -- otherwise imputation quietly invents data.
-IMPUTED_FEATURES = {"usage_trend_share"}
+IMPUTED_FEATURES = {"usage_trend_share", "pos_rank"}
+
+# Missing-indicator companions. If the key ships, the value ships with
+# it -- ALWAYS, regardless of its own p-value.
+#
+# WHY THESE ARE NOT CANDIDATES (Aug 6). `trend_missing` failed the
+# holdout gate at RB: it cleared alpha in one training fold out of three
+# and contributed -0.0003 RMSE when it did. The obvious response is to
+# cut it, and that would be wrong, because it is not in the model to
+# predict anything.
+#
+# `usage_trend_share` is mean-imputed for 186 of 711 RB rows. The
+# indicator exists so the model can tell "this player's trend is
+# average" from "we do not know this player's trend." Without it the
+# imputed coefficient attenuates toward zero and the intercept quietly
+# absorbs the difference between the observed and missing groups.
+# Judging it by predictive ablation is the wrong test in the same way
+# ablating the intercept would be: it is machinery, not evidence.
+#
+# Treating it as a candidate also caused a subtler problem, which is
+# what made this worth fixing rather than exempting. Subject to alpha,
+# the companion flickered in and out across folds -- present in the 2025
+# fit, absent in 2024 and 2023 -- so `usage_trend_share` did not mean
+# the same thing in each fold, and the fold-to-fold comparison the whole
+# gate rests on was not comparing like with like.
+#
+# IT ALSO SURFACED A LIVE BUG: TE ships `usage_trend_share` (152 rows
+# imputed) while alpha cut `trend_missing` at p=0.68. TE has been
+# imputing without an indicator since Phase 10, against this file's own
+# stated rule, and nothing noticed because the rule lived in a comment
+# rather than in the code.
+IMPUTATION_COMPANIONS = {"usage_trend_share": "trend_missing"}
 
 # Positions whose fitted intercept is a SELECTION artifact rather than a
 # fact about the position, and so ships as a relative adjustment only.
@@ -227,6 +338,7 @@ SUPPRESS_LEVEL_SHIFT = {"QB"}
 BOOL_COLUMNS = [
     "qb_changed", "coach_changed", "team_changed",
     "recent_major_injury", "trend_missing", "trend_low_confidence",
+    "depth_chart_missing",
 ]
 
 
@@ -320,6 +432,22 @@ def fit_position(df, position, features, alpha=ALPHA):
     full_coefficients = {f: float(c) for f, c in zip(features, full_model.params[1:])}
     survivors = [f for f in features if p_values[f] < alpha]
 
+    # Force in the missing-indicator companion of any imputed feature
+    # that survived. See IMPUTATION_COMPANIONS: these are machinery, not
+    # candidates, and letting alpha decide them meant the imputed
+    # feature's coefficient meant different things in different folds.
+    forced_companions = []
+    for imputed_feature, companion in IMPUTATION_COMPANIONS.items():
+        if (imputed_feature in survivors and companion in features
+                and companion not in survivors):
+            forced_companions.append(companion)
+    if forced_companions:
+        # Rebuilt in spec order rather than appended, so the design
+        # matrix column order always matches `features` and a
+        # coefficient can never be read against the wrong name.
+        survivors = [f for f in features
+                     if f in survivors or f in forced_companions]
+
     # --- stage 2: refit on survivors ----------------------------------
     # This is the model that ships. Its intercept belongs to its own
     # slopes; borrowing stage 1's would bias every player at this
@@ -371,6 +499,47 @@ def fit_position(df, position, features, alpha=ALPHA):
         if any(np.sign(fold[f]) != np.sign(weights[f]) for fold in stability.values())
     ]
 
+    # MAGNITUDE INSTABILITY -- PORTED FROM fit_rookie_weights (Aug 6),
+    # after the veteran fit shipped something the rookie fit would have
+    # caught.
+    #
+    # WR `pos_rank` came back sign-stable across all nine folds: -0.286,
+    # -0.319, -0.299, -0.306, -0.280, -0.301, -0.350, -0.305, and then
+    # -0.886 when 2025 was withheld. Every fold negative, so the check
+    # above waved it through. That tripled coefficient then cost the 2025
+    # holdout a quarter point of RMSE and took the whole WR model below a
+    # constant.
+    #
+    # The rookie fitter has had this bar since RB `age` failed it there,
+    # and the reason it was not here is simply that the veteran fit had
+    # not yet met a feature that needed it. It has now. A coefficient one
+    # season can move by 3x is not a measurement, whatever its sign.
+    #
+    # Bar is deliberately loose -- every fold shares eight ninths of its
+    # rows with the shipped model, so anything failing this fails badly.
+    # Companions are exempt, for the same reason the gate exempts them:
+    # they are machinery, not predictions. TE `trend_missing` duly fired
+    # this warning at 0.24-2.53x and the gate then passed it, which made
+    # the warning's own text ("treat this as a prediction that the gate
+    # will fail") false. A warning that cries wolf is how you train
+    # someone to skim past the one that matters.
+    #
+    # Their instability is also expected rather than alarming: a
+    # companion carries a small coefficient whose job is to absorb the
+    # difference between the observed and imputed groups, and small
+    # coefficients move around. It is not steering anyone's draft.
+    companions = set(IMPUTATION_COMPANIONS.values())
+    magnitude_unstable = []
+    for f in survivors:
+        if f in companions:
+            continue
+        values = [fold[f] for fold in stability.values() if f in fold]
+        if not values or not weights[f]:
+            continue
+        ratios = [abs(v) / abs(weights[f]) for v in values]
+        if max(ratios) > STABILITY_RATIO or min(ratios) < 1 / STABILITY_RATIO:
+            magnitude_unstable.append(f)
+
     # A suppressed level shift shifts the whole position by a constant,
     # so it changes nothing about the order WITHIN the position and
     # everything about where the position sits against the others.
@@ -402,6 +571,23 @@ def fit_position(df, position, features, alpha=ALPHA):
         },
         "stability_leave_one_season_out": stability,
         "sign_flips": sign_flips,
+        "magnitude_unstable": magnitude_unstable,
+        # Pairwise correlations among SHIPPED features, strongest first.
+        # Recorded so CP1's multicollinearity question has an answer on
+        # file rather than an assurance.
+        "collinearity": (
+            sorted(
+                (
+                    ((a, b), float(np.corrcoef(
+                        subset.select(pl.col(a).cast(pl.Float64)).to_numpy().ravel(),
+                        subset.select(pl.col(b).cast(pl.Float64)).to_numpy().ravel(),
+                    )[0, 1]))
+                    for i, a in enumerate(survivors) for b in survivors[i + 1:]
+                ),
+                key=lambda pair: -abs(pair[1]),
+            )[:5]
+            if len(survivors) > 1 else []
+        ),
         # The reconciliation that would have caught Phase 6. OLS with an
         # intercept forces mean(fitted) == mean(y) exactly, so any
         # meaningful gap here means the shipped numbers do not come from
@@ -455,6 +641,23 @@ def print_summary(position, result, full_model, features):
     if abs(gap) > 1e-6:
         print("  *** RECONCILIATION FAILED -- shipped weights do not match the fit ***")
 
+    if result.get("collinearity"):
+        # CP1 was told to "check for multicollinearity." Asserting that
+        # two correlated features are separable is not checking; this
+        # prints the number so the claim can be read rather than trusted.
+        #
+        # A pair correlating strongly is NOT by itself a problem. It is a
+        # problem when it makes coefficients unstable or inflates the
+        # standard errors past the point of telling the two apart -- and
+        # the LOSO table below plus the standard errors above are where
+        # that shows up. RB `pos_rank` and `workload_share` are the live
+        # case: correlated by construction ("does he have the job" vs
+        # "how much of it has he already converted"), and separable.
+        print(f"\n  strongest feature correlations:")
+        for (a, b), r in result["collinearity"]:
+            note = "   <-- worth a look" if abs(r) > 0.7 else ""
+            print(f"    {a:<26} {b:<26} r={r:+.3f}{note}")
+
     if result["stability_leave_one_season_out"]:
         folds = result["stability_leave_one_season_out"]
         print(f"\n  leave-one-season-out (coefficient when that season is withheld):")
@@ -462,7 +665,15 @@ def print_summary(position, result, full_model, features):
         print(f"    {'feature':<24}{'shipped':>11}{header}")
         for f in result["weights"]:
             row = "".join(f"{folds[s][f]:>11.3f}" for s in folds)
-            flag = "   <-- SIGN FLIP" if f in result["sign_flips"] else ""
+            if f in result["sign_flips"]:
+                flag = "   <-- SIGN FLIP"
+            elif f in result.get("magnitude_unstable", []):
+                folds_f = [v[f] for v in folds.values()]
+                ratios = [abs(x) / abs(result["weights"][f]) for x in folds_f]
+                flag = (f"   <-- MAGNITUDE {min(ratios):.2f}-{max(ratios):.2f}x "
+                        f"(bar is {1 / STABILITY_RATIO:.2f}-{STABILITY_RATIO:.2f})")
+            else:
+                flag = ""
             print(f"    {f:<24}{result['weights'][f]:>11.3f}{row}{flag}")
 
 
@@ -510,5 +721,13 @@ if __name__ == "__main__":
         print(f"  {position}: intercept {result['intercept']:+.4f} | {kept}")
         if result["sign_flips"]:
             print(f"    WARNING sign-unstable across seasons: {result['sign_flips']}")
+        if result.get("magnitude_unstable"):
+            print(f"    WARNING magnitude-unstable across seasons "
+                  f"(one season moves these by >{STABILITY_RATIO}x): "
+                  f"{result['magnitude_unstable']}")
+            print(f"    These still SHIP -- the veteran fit reports rather than "
+                  f"drops, unlike the rookie fit. The holdout gate is what stops "
+                  f"them. Treat a warning here as a prediction that the gate "
+                  f"will fail.")
 
     print("\nNext: python -m src.pipeline, then python -m src.verify_adjustments")

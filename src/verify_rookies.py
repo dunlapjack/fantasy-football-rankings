@@ -303,10 +303,23 @@ def check_no_contamination(check):
             f"LEAKED: {leaked}" if leaked else "",
         )
 
-    # Rookie-only features must not be in any veteran spec. `pick` and
-    # `pos_rank` are null for every veteran, so a veteran coefficient on
-    # them would be fitted entirely on imputed values.
-    rookie_only = {"pick", "pos_rank", "depth_chart_missing"}
+    # Rookie-only features must not be in any veteran spec, because they
+    # are null for every veteran and a coefficient fitted entirely on
+    # imputed values is fitted on nothing.
+    #
+    # `pos_rank` and `depth_chart_missing` LEFT THIS SET (Aug 6). They
+    # were rookie-only when this check was written -- only rookies.py
+    # computed them -- so a veteran carrying one meant a plumbing
+    # mistake. Phase 13 CP1's depth chart test now computes them for
+    # every offensive player in both the backtest and the live table, so
+    # they are legitimately shared and this would fail on a deliberate
+    # change.
+    #
+    # The check is not weakened, it is re-scoped: the invariant was
+    # never "these particular names," it was "no veteran coefficient
+    # fitted on a column veterans do not have." `pick` is the only
+    # column still in that category.
+    rookie_only = {"pick"}
     for position, features in VETERAN_FEATURE_SPECS.items():
         leaked = sorted(set(features) & rookie_only)
         check.hard(

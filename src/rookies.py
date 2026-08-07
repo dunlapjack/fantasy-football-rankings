@@ -355,7 +355,24 @@ def build_rookie_feature_table(season=CURRENT_ROOKIE_SEASON):
         pl.lit(0, dtype=pl.Int64).alias("games_played"),
     ])
 
-    return rookie_features
+    # `pos_rank` and `depth_chart_missing` are DROPPED here (Aug 6).
+    #
+    # They are still computed above, because `is_starter` derives from
+    # pos_rank and the QB cohort baseline is looked up by it. They are
+    # not RETURNED, because situational.build_situational_features now
+    # supplies both for every offensive player -- veterans included, for
+    # the Phase 13 CP1 depth chart test -- and pipeline.py joins that
+    # onto this table. Two sources for one column name would collide in
+    # the join and silently produce pos_rank / pos_rank_right, with
+    # downstream code reading whichever it happened to get.
+    #
+    # The two sources agree by construction (both take the latest live
+    # snapshot), which is exactly what makes the collision dangerous
+    # rather than obvious: it would not look wrong until the day they
+    # diverged.
+    return rookie_features.drop(
+        [c for c in ("pos_rank", "depth_chart_missing") if c in rookie_features.columns]
+    )
 
 
 if __name__ == "__main__":

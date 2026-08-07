@@ -1,0 +1,35 @@
+{
+  "passed": true,
+  "seasons": [
+    2025,
+    2024,
+    2023
+  ],
+  "alpha": 0.1,
+  "failures": [],
+  "position_mean_gain": {
+    "veteran/RB": 0.42536798576787405,
+    "veteran/WR": 0.37132145629391006,
+    "veteran/TE": 0.116208929876546,
+    "rookie/TE": 0.290729257268109
+  },
+  "feature_mean_gain": {
+    "veteran/RB/workload_share": 0.12190322916874956,
+    "veteran/RB/age": 0.06410253462910835,
+    "veteran/RB/usage_trend_share": 0.032789517103399834,
+    "veteran/RB/trend_missing": 0.025563447731978457,
+    "veteran/RB/position_competition_ppg": 0.04049007134932007,
+    "veteran/RB/pos_rank": 0.09428823899768683,
+    "veteran/RB/depth_chart_missing": 0.02204103134792179,
+    "veteran/WR/team_changed": 0.025983477906914427,
+    "veteran/WR/workload_share": 0.030529701504584672,
+    "veteran/WR/recent_major_injury": 0.025926540598032528,
+    "veteran/WR/age": 0.16573880358492202,
+    "veteran/TE/workload_share": 0.011114624338008028,
+    "veteran/TE/age": 0.029829621339821994,
+    "veteran/TE/usage_trend_share": 0.0306948411578567,
+    "veteran/TE/trend_missing": -0.0028350006417889873,
+    "veteran/TE/position_competition_ppg": 0.016177522505005815,
+    "rookie/TE/age": 0.290729257268109
+  }
+}

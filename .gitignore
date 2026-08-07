@@ -229,6 +229,19 @@ data/*
 # produced it. This is the archive; the .xlsx is just a rendering of it.
 !data/situational_weights.json
 
+# Same argument, same file type, added when Phase 12 created a second
+# set of weights (Aug 6). Rookies are projected by a separate model
+# against a separate baseline, so situational_weights.json alone no
+# longer describes what produced a board.
+!data/rookie_weights.json
+
+# The out-of-sample validation record. Tracked because it is the EVIDENCE
+# rather than an output: it names which features beat a constant on which
+# held-out seasons, and build_board refuses to run without it. A weights
+# file with no matching gate is a model nobody checked, and the point of
+# keeping both is being able to see, later, that they matched.
+!data/holdout_gate.json
+
 # Draft boards are build artifacts now that src/build_board.py exists.
 # Binary, useless diffs, and regenerable on demand -- delete old versions
 # freely. Recover any previously committed one with:
@@ -245,3 +258,4 @@ data/*
 2026_*_Board_v[0-9].xlsx
 2026_*_Board_v10.xlsx
 2026_*_Board_v11.xlsx
+2026_*_Board_v12.xlsx

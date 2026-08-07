@@ -15,6 +15,8 @@ from src.situational import (
     compute_coach_continuity,
     compute_oline_continuity,
     compute_position_competition,
+    compute_position_competition_top_k,
+    depth_chart_rank,
     compute_recent_injury_flag,
     compute_workload_share,
     compute_experience,
@@ -24,6 +26,16 @@ from src.situational import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Phase 13 CP1. Competition definitions to emit alongside the incumbent
+# mean-of-all-teammates version, so the backtest can choose between them.
+# The plan's pre-specified candidate set is k=1, 2, 3, plus dropping the
+# feature entirely -- "pick by backtest, not by feel."
+#
+# Imported rather than re-declared: the live table in situational.py has
+# to carry exactly the same set, or a definition that wins here would be
+# null on the board and silently mean-imputed.
+from src.situational import COMPETITION_TOP_K  # noqa: E402
 
 
 def get_team_as_of_season(season):
@@ -201,6 +213,16 @@ def build_backtest_season(target_season):
         {"baseline_ppg": "fantasy_points_per_game"}
     )
     position_competition = compute_position_competition(position_competition_input)
+
+    # Phase 13 CP1. The top-k variants ride alongside the incumbent so
+    # all of them are fitted on identical rows and the backtest picks a
+    # winner instead of the definition being changed on argument. Adding
+    # columns costs a wider CSV; changing the definition in place would
+    # cost the ability to compare.
+    competition_variants = [
+        compute_position_competition_top_k(position_competition_input, k)
+        for k in COMPETITION_TOP_K
+    ]
     team_changed = compute_player_team_changed(target_season)
 
     workload_share = compute_workload_share(baseline_with_team, tendency)
@@ -235,6 +257,42 @@ def build_backtest_season(target_season):
         .with_columns([
             pl.lit(target_season).alias("season"),
         ])
+    )
+
+    # Joined in a plain loop rather than folded into the chain above.
+    # The chain is already long enough that one more clever line in it
+    # would be read past rather than read.
+    for variant in competition_variants:
+        combined = combined.join(variant, on="player_id", how="left")
+
+    # Phase 13 CP1 -- THE TUTEN TEST. Depth chart position for veterans,
+    # tested here for the first time.
+    #
+    # The board ranks Bhayshul Tuten ~150th against an ADP of 51, and
+    # every driver on him is POSITIVE -- the model likes his age, his
+    # situation, his share. He ranks low because his BASELINE is thin
+    # production, and the model has no channel through which "he is the
+    # starter now" can reach a projection. The market prices an expected
+    # 2026 role; the model prices demonstrated 2025 snaps.
+    #
+    # Depth chart rank is the only pre-season, statistics-only signal
+    # that carries role information, and FEATURE_SPEC.md ruled it a
+    # "secondary tie-breaker only, not a primary weighted input" -- a
+    # DECISION, never a finding. It failed for rookies on the holdout,
+    # which says nothing about veterans: a rookie's chart position is a
+    # guess by a coaching staff who have not seen him play, a veteran's
+    # is a summary of what they concluded last year.
+    #
+    # Read as of the START of the target season, which is pre-outcome
+    # and matches how the live board reads an August chart. See
+    # situational.depth_chart_rank for the remaining week-1-versus-August
+    # asymmetry.
+    depth = depth_chart_rank(target_season)
+    combined = combined.join(depth, on="player_id", how="left").with_columns(
+        # Required companion to pos_rank's mean-imputation. A veteran
+        # absent from his team's chart is not "average", he is buried or
+        # unsigned, and imputing without the indicator invents data.
+        pl.col("pos_rank").is_null().alias("depth_chart_missing")
     )
 
     # Phase 11 B (CP5). `delta` is now measured against the SHRUNK

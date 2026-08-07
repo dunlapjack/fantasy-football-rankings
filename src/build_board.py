@@ -54,7 +54,7 @@ from src.ranking import load_situational_weights
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FEATURES_PATH = PROJECT_ROOT / "data" / "player_features.csv"
-CONFIG_PATH = PROJECT_ROOT / "league_config.json"
+CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
 
 # MODEL_VERSION bumps when the model changes -- new weights, new features,
 # a refit. It does NOT bump for a data refresh (new ADP pull, updated injury
@@ -63,7 +63,7 @@ CONFIG_PATH = PROJECT_ROOT / "league_config.json"
 # filename, which is what keeps one file per league instead of a pile of
 # near-identical spreadsheets.
 # Phase 10 (Aug 4): 9 -> 10. This one is an honest bump, unlike the 8 -> 9
-# documented in PHASE_8_PLAN.md. Features changed (age replaced experience;
+# documented in PHASE_8-14_PLAN.md. Features changed (age replaced experience;
 # usage_trend_share added at RB and TE) and all three positions were refit,
 # so ranks move for real.
 # Phase 11 (Aug 4): 10 -> 11. No refit -- the weights are byte-identical to
@@ -75,7 +75,19 @@ CONFIG_PATH = PROJECT_ROOT / "league_config.json"
 # position's 30th percentile at K=2 (CP5) -- and all four positions were
 # refit against the new deltas. RB `trend_missing` drops out of the model
 # entirely as a result. This is the largest single move since Phase 7.
-MODEL_VERSION = 12
+# Phase 12 (Aug 6): 12 -> 13. Rookies stop taking a zero adjustment and
+# start taking a fitted one at RB and WR, so rookie ranks move on EVERY
+# board, not only the new one. That is a ranking-logic change by this
+# constant's own definition and has to bump it.
+#
+# It nearly didn't. Phase 12 was built alongside a new league, and the
+# attention was on that league -- but `ranking.apply_situational_weights`
+# is shared, so Lebron James and Dunlap Family both changed the moment
+# rookie_weights.json appeared. A board whose numbers moved while its
+# version stayed put is the exact problem the Build History sheet was
+# added to solve, one level up: there, three rebuilds of one version; here,
+# two models under one version. Rebuild all three boards off this bump.
+MODEL_VERSION = 13
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -110,14 +122,69 @@ PUP_DEFAULT_GAMES_MISSED = 4
 # compute_replacement_ranks() for why.
 FLEX_SPLIT = {"RB": 0.40, "WR": 0.40, "TE": 0.20}
 
+# Same idea for a SUPERFLEX slot, which is FLEX plus quarterbacks.
+#
+# The split is overwhelmingly QB and that is not a modeling preference,
+# it is arithmetic: in any league where a second quarterback is legal,
+# the worst startable QB outscores the best startable flex RB/WR by more
+# than any other swap available, so superflex slots go to quarterbacks
+# until the position runs dry. The residual is the tail of teams who
+# missed the QB run and start a third receiver there.
+#
+# Like FLEX_SPLIT this is an ASSUMPTION, it is only used by the legacy
+# compute_starter_ranks(), and it does not drive VOR. It exists so that
+# the starter-count floor in compute_replacement_ranks() knows a
+# superflex league starts more than `num_teams` quarterbacks -- without
+# it the floor is num_teams x 0, and QB replacement level would be free
+# to land absurdly shallow on a board where QB is the scarcest position
+# there is.
+SUPERFLEX_SPLIT = {"QB": 0.85, "RB": 0.05, "WR": 0.08, "TE": 0.02}
+
 # Roster slots every team fills but this model does not rank. They still
 # consume real picks, so they must come out of the pick pool before skill
 # positions are allocated -- otherwise a 16-round draft looks like it has
 # 2 x num_teams more skill picks than it does, and replacement level lands
 # too deep at every position.
-UNMODELED_SLOTS_PER_TEAM = 2  # 1 K + 1 DST
+#
+# WAS A HARDCODED 2 UNTIL THE 32-TEAM LEAGUE (Aug 6)
+# --------------------------------------------------
+# Both leagues that existed when this was written started 1 K and 1 DST,
+# so `2` was correct twice and looked like a constant. The 32-team
+# superflex league starts neither, and the constant would have removed
+# 64 picks from a 320-pick draft that does not spend them -- pulling
+# replacement level ~20% shallower at every position and inflating every
+# VOR on the board. It fails silently and in the direction that makes
+# the board look more confident, which is the worst combination.
+#
+# Derived from roster_slots now, so a league that adds or drops a
+# non-skill slot gets the right pick pool without a second place to
+# remember.
+UNMODELED_SLOTS = ("K", "DST")
 
 MODELED_POSITIONS = ["QB", "RB", "WR", "TE"]
+
+# How many of the deepest ADP-covered picks define the mix used to
+# extrapolate a draft longer than the feed. See compute_replacement_ranks.
+#
+# 40 is a compromise with a reason on each side. Too narrow and the mix
+# is noise -- a single positional run at the end of the feed would
+# distort the whole extrapolation. Too wide and it stops being a TAIL
+# and becomes the overall mix again, which is the behaviour being
+# replaced. 40 is roughly the last four rounds of a 10-team draft: long
+# enough to average over a run, short enough to still describe late-round
+# behaviour.
+TAIL_WINDOW = 40
+
+# Extrapolating this much of a draft is not a footnote. At or above this
+# share the run says so in plain language rather than printing a NOTE
+# that reads like every other NOTE.
+EXTRAPOLATION_WARN_SHARE = 0.25
+
+
+def unmodeled_slots_per_team(config):
+    """Starting slots per team that consume a pick but get no ranking."""
+    slots = config["roster_slots"]
+    return sum(slots.get(name, 0) for name in UNMODELED_SLOTS)
 
 FONT_NAME = "Arial"
 
@@ -588,6 +655,277 @@ def build_value_drivers(players, weights_by_position=None):
     return players.with_columns(pl.Series("value_drivers", drivers, dtype=pl.String))
 
 
+GATE_PATH = PROJECT_ROOT / "data" / "holdout_gate.json"
+WEIGHT_FILES = [
+    PROJECT_ROOT / "data" / "situational_weights.json",
+    PROJECT_ROOT / "data" / "rookie_weights.json",
+]
+
+
+def require_holdout_gate(skip=False):
+    """
+    Refuses to build a board unless the current weights have passed
+    out-of-sample validation.
+
+    WHY THIS IS A HARD STOP (Aug 6). Phase 13 CP2 cut four things that
+    alpha had passed and that leave-one-season-out had also passed --
+    including a whole position's only feature, and a phase's headline
+    finding. In-sample significance has now demonstrably admitted
+    features that do not predict. The gate is the only check downstream
+    of a refit that would catch the next one.
+
+    THREE WAYS TO FAIL, all of them things that would otherwise happen
+    silently:
+
+      MISSING   No gate has ever been run against these weights.
+      FAILED    The gate ran and something shipped has no out-of-sample
+                value.
+      STALE     The weights are NEWER than the gate. This is the
+                dangerous one and the reason mtimes are compared rather
+                than just reading `passed`: refitting after a green gate
+                leaves a passing file on disk describing a model that no
+                longer exists. Exactly the failure the Build History
+                sheet was added to solve, and the same shape as the
+                stale-weights check already in verify_adjustments.
+
+    `--skip-gate` exists for genuine emergencies and says so loudly. It
+    is not for "the gate is annoying."
+    """
+    if skip:
+        print("\n  *** HOLDOUT GATE SKIPPED (--skip-gate) ***")
+        print("  This board may contain features that do not predict out of "
+              "sample. Do not draft from it without knowing why you skipped.\n")
+        return
+
+    if not GATE_PATH.exists():
+        raise SystemExit(
+            f"\nBUILD BLOCKED: no holdout gate at {GATE_PATH.name}.\n"
+            f"These weights have never been validated out of sample, which is how "
+            f"four non-predictive features reached this model once already.\n\n"
+            f"Run:  python -m src.holdout --gate\n"
+        )
+
+    with open(GATE_PATH) as f:
+        gate = json.load(f)
+
+    gate_time = GATE_PATH.stat().st_mtime
+    stale = [p.name for p in WEIGHT_FILES
+             if p.exists() and p.stat().st_mtime > gate_time]
+    if stale:
+        raise SystemExit(
+            f"\nBUILD BLOCKED: {stale} are NEWER than the holdout gate.\n"
+            f"The gate on disk passed a model that has since been refitted, so it "
+            f"describes weights that no longer exist. A green light for the wrong "
+            f"model is worse than no light.\n\n"
+            f"Run:  python -m src.holdout --gate\n"
+        )
+
+    if not gate.get("passed"):
+        failures = "\n".join(f"    {x}" for x in gate.get("failures", []))
+        raise SystemExit(
+            f"\nBUILD BLOCKED: the holdout gate failed.\n\n{failures}\n\n"
+            f"Remove these from FEATURE_SPECS, refit, and re-run the gate. "
+            f"Shipping them means drafting off features that are known not to "
+            f"predict.\n"
+        )
+
+    print(f"Holdout gate: PASSED (folds {gate.get('seasons')})")
+
+
+def rescore_for_league(players, config, base_config_path=CONFIG_PATH):
+    """
+    Re-expresses every projection in THIS league's scoring.
+
+    THE BUG THIS FIXES (Aug 6)
+    --------------------------
+    `fantasy_points_per_game` is computed once, in features.py, under one
+    config -- league_config_lebronjames.json. That was invisible while
+    both leagues used identical scoring blocks. They did: the 12-team and
+    6-team configs differ in teams, weeks, and keepers, and in nothing
+    that touches a point value.
+
+    The 32-team league is the first with different SCORING: 4-point
+    passing touchdowns and -1 interceptions against 6 and -2. Without
+    this function its board would rank quarterbacks on numbers roughly
+    2.5-3.5 PPG too high apiece -- a passing touchdown is worth a third
+    less and every one of them was counted at full price. In a SUPERFLEX
+    league, where QB is the scarcest position on the board and 27 of them
+    get drafted, that is not a rounding error; it is the single largest
+    distortion the board could carry.
+
+    Worth noting how quietly it fails. Every number still looks
+    plausible, the columns all populate, and nothing anywhere raises.
+    The board just tells you to draft quarterbacks.
+
+    HOW
+    ---
+    Only `pass_td` and `interception` can differ between the configs
+    this project ships, and player_features.csv already stores
+    `passing_tds_per_game` and `passing_interceptions_per_game`. So the
+    correction is exact, not modelled:
+
+        delta = pass_tds_pg  x (league.pass_td   - base.pass_td)
+              + pass_ints_pg x (league.interception - base.interception)
+
+    Any OTHER scoring key differing is caught and raised rather than
+    silently ignored, because the moment a league changes `reception` or
+    `rush_td` this arithmetic is no longer complete and a wrong answer
+    would be worse than a crash.
+
+    TWO THINGS THIS DOES NOT FIX, both stated rather than papered over:
+
+    1. ROOKIE QUARTERBACKS. A rookie's projection is a cohort baseline,
+       not a stat line, so he has no `passing_tds_per_game` to correct
+       with -- the columns are null. Rookie QBs therefore stay in the
+       BASE league's scoring on this board and are overvalued by roughly
+       the same 2.5-3.5 PPG. The count is small (a handful clear the
+       depth chart) but on a superflex board they sit exactly where it
+       hurts. Fixing it properly means scoring the cohort baselines per
+       league in rookies.py, which is a pipeline change, not a board one.
+       Flagged loudly at the bottom of this function.
+
+    2. THE FITTED WEIGHTS. Situational coefficients were fitted against
+       deltas measured in base scoring. QB carries exactly one weight
+       (`age`, -0.19 PPG/yr) and its level shift is already suppressed,
+       so the residual error is a fraction of a point and does not
+       reorder anything. Recorded because it is real, not because it is
+       urgent -- a league that changed `reception` would make this
+       matter at every position at once, and that league is the one that
+       should refit.
+    """
+    with open(base_config_path) as f:
+        base_scoring = json.load(f)["scoring"]
+    league_scoring = config["scoring"]
+
+    correctable = {"pass_td", "interception"}
+    differing = {
+        k for k in league_scoring
+        if isinstance(league_scoring.get(k), (int, float))
+        and league_scoring.get(k) != base_scoring.get(k)
+    }
+
+    uncorrectable = differing - correctable
+    if uncorrectable:
+        raise ValueError(
+            f"{config['league_name']} differs from the base scoring config in "
+            f"{sorted(uncorrectable)}, which rescore_for_league() cannot correct "
+            f"from the columns in player_features.csv.\n"
+            f"Every projection on this board would be in the WRONG SCORING and "
+            f"nothing downstream would notice.\n"
+            f"Fix by making features.py score per league, or extend this function "
+            f"with the per-game columns those keys need. Do not remove this check."
+        )
+
+    if not differing:
+        return players
+
+    td_delta = league_scoring["pass_td"] - base_scoring["pass_td"]
+    int_delta = league_scoring["interception"] - base_scoring["interception"]
+
+    correction = (
+        pl.col("passing_tds_per_game").cast(pl.Float64).fill_null(0.0) * td_delta
+        + pl.col("passing_interceptions_per_game").cast(pl.Float64).fill_null(0.0)
+        * int_delta
+    )
+
+    ppg_columns = [
+        c for c in [
+            "fantasy_points_per_game",
+            "fantasy_points_per_game_shrunk",
+            "adjusted_fantasy_points_per_game",
+        ] if c in players.columns
+    ]
+    players = players.with_columns(
+        [(pl.col(c) + correction).alias(c) for c in ppg_columns]
+    )
+
+    moved = players.filter(correction.abs() >= 0.5)
+    print(f"Rescored for {config['league_name']}: pass_td {base_scoring['pass_td']}"
+          f"->{league_scoring['pass_td']}, int {base_scoring['interception']}"
+          f"->{league_scoring['interception']} "
+          f"({moved.height} players moved 0.5+ PPG across {len(ppg_columns)} columns)")
+
+    # Anyone the correction could not reach, for whatever reason. Keyed
+    # on the RATE BEING NULL rather than on `is_rookie`, which is the
+    # honest test: since Aug 6 rookies carry their cohort's average
+    # passing rates (see rookies.aggregate_rookie_season), so being a
+    # rookie no longer implies being uncorrectable. Checking the thing
+    # that actually blocks the arithmetic means this warning stays true
+    # if the data changes underneath it.
+    stranded = players.filter(
+        (pl.col("position") == "QB") & pl.col("passing_tds_per_game").is_null()
+    )
+    if stranded.height:
+        # Scoped to the ones that could actually reach a roster. The raw
+        # count is dominated by undrafted camp bodies who will never be
+        # picked in any league, and a warning that cries wolf about 21
+        # players when 2 matter is a warning that gets ignored on draft
+        # day. `has_adp` is the honest filter: it means a real drafter,
+        # somewhere, took this player on purpose.
+        draftable = stranded.filter(pl.col("has_adp").cast(pl.String)
+                                    .str.to_lowercase().eq("true"))
+        print(f"  NOTE: {stranded.height} QB(s) have no passing rate to rescore "
+              f"from and stay in the base scoring.")
+        if draftable.height:
+            names = ", ".join(
+                draftable.sort("adp", nulls_last=True)
+                .select("player_name").to_series().to_list()[:5]
+            )
+            print(f"  WARNING: {draftable.height} of them have an ADP and are "
+                  f"OVERVALUED on this board by ~2-3 PPG: {names}")
+            print(f"  They remain in {base_scoring['pass_td']}-point-passing-TD "
+                  f"scoring. Discount them by hand. See rescore_for_league().")
+        else:
+            print(f"  None of them carry an ADP, so none is realistically "
+                  f"draftable and the distortion does not reach the board.")
+
+    return players
+
+
+def select_adp_variant(players, config):
+    """
+    Points the canonical `adp` / `has_adp` columns at whichever ADP feed
+    this league's config asks for.
+
+    pipeline.py attaches every variant in adp.ADP_VARIANTS to one
+    player_features.csv -- `ppr` unsuffixed and `2qb` as `adp_2qb` --
+    because all boards must ship from a single model run. A league with
+    `"adp_format": "2qb"` gets those suffixed columns renamed over the
+    canonical ones HERE, once, so that every function downstream
+    (compute_replacement_ranks, compute_draft_targets, the sheet writer)
+    goes on reading `adp` and never learns there was a choice.
+
+    Renaming beats threading a column name through fifteen call sites,
+    and it beats a config-aware `adp` in the CSV, which would make
+    player_features.csv league-specific and quietly break Phase 13 CP4's
+    one-model-many-boards rule.
+    """
+    adp_format = config.get("adp_format", "ppr")
+    if adp_format == "ppr":
+        return players
+
+    suffix = f"_{adp_format}"
+    suffixed = [c for c in players.columns if c.endswith(suffix)]
+    if not suffixed:
+        print(
+            f"\n  WARNING: {config['league_name']} asks for adp_format="
+            f"{adp_format!r} but player_features.csv has no *{suffix} columns.\n"
+            f"  Falling back to the default PPR feed, which is NOT what this "
+            f"league drafts under. Re-run `python -m src.pipeline` to pull it.\n"
+        )
+        return players
+
+    # Drop the canonical columns first, then rename the suffixed ones onto
+    # the names they just vacated.
+    canonical = [c[: -len(suffix)] for c in suffixed]
+    players = players.drop([c for c in canonical if c in players.columns])
+    players = players.rename(dict(zip(suffixed, canonical)))
+
+    print(f"ADP: using the {adp_format!r} feed for {config['league_name']} "
+          f"({len(suffixed)} columns remapped)")
+    return players
+
+
 def compute_starter_ranks(config):
     """
     LEGACY (Phase 8 - Phase 10). How many players at each position get
@@ -601,12 +939,14 @@ def compute_starter_ranks(config):
     teams = config["num_teams"]
     slots = config["roster_slots"]
     flex_slots = slots.get("FLEX", 0)
+    superflex_slots = slots.get("SUPERFLEX", 0)
 
     ranks = {}
     for position in MODELED_POSITIONS:
         starters = teams * slots.get(position, 0)
         flex_share = teams * flex_slots * FLEX_SPLIT.get(position, 0.0)
-        ranks[position] = round(starters + flex_share)
+        superflex_share = teams * superflex_slots * SUPERFLEX_SPLIT.get(position, 0.0)
+        ranks[position] = max(1, round(starters + flex_share + superflex_share))
     return ranks
 
 
@@ -666,7 +1006,46 @@ def compute_replacement_ranks(config, players):
 
     teams = config["num_teams"]
     rounds = config["total_rounds"]
-    skill_picks = teams * rounds - teams * UNMODELED_SLOTS_PER_TEAM
+    skill_picks = teams * rounds - teams * unmodeled_slots_per_team(config)
+
+    # SUPERFLEX / ADP-FORMAT NOTE (Aug 6). The position mix below is read
+    # off whichever ADP feed select_adp_variant() installed, and for a
+    # superflex league the feed matters more than anything else in this
+    # function -- it is the sole evidence for how many quarterbacks come
+    # off the board, and QB is the position superflex changes.
+    #
+    #   adp_format="ppr"  -> one-QB mocks. Understates QB demand badly.
+    #                        The starter floor is doing all the work.
+    #   adp_format="2qb"  -> the closest feed FFC publishes, and the right
+    #                        call. Still not identical: 2QB REQUIRES two
+    #                        starters where superflex only permits a
+    #                        second, so it leans slightly the other way.
+    #
+    # Either way the number is a proxy, and which direction it leans is
+    # worth printing next to it rather than leaving in a comment nobody
+    # opens on draft day.
+    if config["roster_slots"].get("SUPERFLEX", 0) and not config.get("expected_drafted"):
+        adp_format = config.get("adp_format", "ppr")
+        floor = compute_starter_ranks(config).get("QB")
+        if adp_format == "ppr":
+            print(
+                f"\n  WARNING: {config['league_name']} has a SUPERFLEX slot but reads "
+                f"the non-superflex 'ppr' ADP feed.\n"
+                f"  The derived QB count will UNDERSTATE how many quarterbacks go, "
+                f"pushing QB replacement too shallow and UNDERVALUING every "
+                f"quarterback here. The starter floor (QB{floor}) is the only thing "
+                f"holding it up.\n"
+                f"  Set \"adp_format\": \"2qb\" in the config.\n"
+            )
+        else:
+            print(
+                f"\n  NOTE: {config['league_name']} is superflex and reads the "
+                f"{adp_format!r} ADP feed -- the closest proxy FFC publishes, but a "
+                f"proxy. 2QB requires a second starting QB where superflex only "
+                f"permits one, so this OVERSTATES QB demand a little.\n"
+                f"  Starter floor is QB{floor}. Override with an `expected_drafted` "
+                f"block once real draft data exists.\n"
+            )
 
     # Draft order = ADP order. Out-for-season players are dropped: they
     # consume no pick, so leaving them in would push replacement one slot
@@ -683,17 +1062,68 @@ def compute_replacement_ranks(config, players):
     )
     ranks = {p: int(counts.get(p, 0)) for p in MODELED_POSITIONS}
 
-    # If the ADP feed is shorter than the draft (it currently runs ~201
-    # players deep against 168 skill picks in the 12-team league, so this
-    # is headroom, not a live problem), scale the observed shares up to
-    # the full pick count rather than silently setting replacement too
-    # shallow -- which would inflate every VOR on the board.
+    # If the ADP feed is shorter than the draft, the uncovered picks have
+    # to be attributed to positions somehow, or replacement lands too
+    # shallow and every VOR on the board inflates.
+    #
+    # UNIFORM SCALING WAS WRONG, AND THE 32-TEAM BOARD IS WHERE IT SHOWED
+    # -------------------------------------------------------------------
+    # The old rule multiplied every position's count by
+    # skill_picks/observed. That assumes the position mix of the covered
+    # part of the draft continues unchanged through the uncovered part.
+    # It is harmless when the shortfall is small and catastrophic when it
+    # is not.
+    #
+    # First run of the 32-team superflex board: ADP covered 184 of 320
+    # picks, so 42% of the draft was extrapolated at 1.74x, and QB
+    # replacement came out at **QB63**. There are 32 starting
+    # quarterbacks in the NFL. QB63 is a third-stringer projecting near
+    # zero, which handed every real quarterback a VOR roughly equal to
+    # his entire projection and pushed Josh Allen to 3rd overall.
+    #
+    # The flaw is that QB and TE draw from a FINITE startable pool while
+    # RB and WR do not. Rounds 8-10 of any draft are running back and
+    # receiver dart throws; nobody is taking a 40th quarterback. Scaling
+    # QB by the same factor as WR asserts otherwise.
+    #
+    # THE FIX USES THE FEED'S OWN TAIL
+    # --------------------------------
+    # Extrapolate the shortfall using the position mix of the DEEPEST
+    # covered picks rather than the mix of the whole feed. If
+    # quarterbacks have stopped going by the time the feed runs out, the
+    # tail mix says so and the extrapolation stops adding them -- with no
+    # invented parameter and no hand-set cap. It is still drafter
+    # behaviour, still the one place ADP earns its keep, just read at the
+    # point that actually describes the picks being estimated.
     observed = sum(ranks.values())
     if observed and observed < skill_picks:
-        scale = skill_picks / observed
-        print(f"NOTE: ADP covers {observed} of {skill_picks} skill picks -- "
-              f"scaling observed position shares by {scale:.2f}x.")
-        ranks = {p: max(1, round(n * scale)) for p, n in ranks.items()}
+        shortfall = skill_picks - observed
+        tail = drafted.tail(min(TAIL_WINDOW, drafted.height))
+        tail_counts = dict(tail.group_by("position").len().iter_rows())
+        tail_total = sum(tail_counts.get(p, 0) for p in MODELED_POSITIONS)
+
+        if tail_total:
+            share = {p: tail_counts.get(p, 0) / tail_total for p in MODELED_POSITIONS}
+        else:  # pragma: no cover -- only if the tail has no modeled positions
+            share = {p: ranks[p] / observed for p in MODELED_POSITIONS}
+
+        print(f"NOTE: ADP covers {observed} of {skill_picks} skill picks. "
+              f"Attributing the remaining {shortfall} using the mix of the last "
+              f"{tail.height} covered picks:")
+        print("      " + "  ".join(
+            f"{p} {share[p]:.0%}" for p in MODELED_POSITIONS
+        ))
+        ranks = {
+            p: max(1, ranks[p] + round(shortfall * share[p]))
+            for p in MODELED_POSITIONS
+        }
+
+        if shortfall / skill_picks > EXTRAPOLATION_WARN_SHARE:
+            print(f"      WARNING: {shortfall / skill_picks:.0%} of this draft is "
+                  f"extrapolated, not observed. Replacement level here is an "
+                  f"estimate resting on {tail.height} picks.")
+            print(f"      Set an `expected_drafted` block in the config as soon as "
+                  f"you have real draft results.")
 
     # A position must have at least as many drafted as there are starting
     # slots; otherwise replacement lands above a player somebody has to
@@ -885,6 +1315,8 @@ def build_notes(replacement_ranks, teams, rounds, config=None, starter_ranks=Non
     season = (config or {}).get("fantasy_season_length")
     weeks = (config or {}).get("regular_season_weeks")
 
+    unmodeled = unmodeled_slots_per_team(config or {"roster_slots": {}})
+
     replacement_note = ""
     if starter_ranks:
         old = " / ".join(f"{p}{starter_ranks[p]}" for p in order
@@ -892,7 +1324,7 @@ def build_notes(replacement_ranks, teams, rounds, config=None, starter_ranks=Non
         replacement_note = (
             f"CHANGED IN v11: replacement level used to be the last STARTER ({old}) and is now "
             f"the last player DRAFTED ({levels}) -- {teams * rounds} picks minus "
-            f"{teams * UNMODELED_SLOTS_PER_TEAM} for K/DST, split by the position mix of that "
+            f"{teams * unmodeled} for K/DST, split by the position mix of that "
             "many players in ADP order. The old rule was defensible at 12 teams and wrong at 6: "
             "it set replacement at QB6 in a league where QB7 through QB32 are all on waivers, so "
             "the board was telling you to spend an early pick on a quarterback you could stream. "
@@ -1201,13 +1633,24 @@ def write_build_history(workbook, output_path, config, build_note):
 
 
 def build_board(features_path=FEATURES_PATH, output_path=None,
-                config_path=CONFIG_PATH, version=MODEL_VERSION, build_note=None):
+                config_path=CONFIG_PATH, version=MODEL_VERSION, build_note=None,
+                skip_gate=False):
+    require_holdout_gate(skip=skip_gate)
+
     config = load_config(config_path)
     teams = config["num_teams"]
 
     players = pl.read_csv(features_path).filter(
         pl.col("position").is_in(MODELED_POSITIONS)
     )
+
+    players = select_adp_variant(players, config)
+
+    # BEFORE anything reads a PPG column. Replacement level, VOR, draft
+    # targets and the sheet itself all descend from these numbers, so a
+    # rescore applied later would leave some of the board in one scoring
+    # system and some in another -- which is worse than the bug it fixes.
+    players = rescore_for_league(players, config)
 
     # CSV round-trips booleans as "true"/"false" strings; normalize once
     # here so every downstream check is a real boolean.
@@ -1265,7 +1708,7 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build the 2026 Excel draft board.")
     parser.add_argument("--config", type=str, default=str(CONFIG_PATH),
-                        help="league config json (default: league_config.json, "
+                        help="league config json (default: league_config_lebronjames.json, "
                              "i.e. Lebron James). Use league_config_dunlap.json "
                              "for the 6-team Dunlap Family board.")
     parser.add_argument("--version", type=int, default=MODEL_VERSION,
@@ -1278,6 +1721,11 @@ if __name__ == "__main__":
     parser.add_argument("--note", type=str, default=None,
                         help="what changed in this build; recorded in the "
                              "Build History sheet")
+    parser.add_argument("--skip-gate", action="store_true",
+                        help="build even if the holdout gate is missing, stale "
+                             "or failing. For emergencies only -- the resulting "
+                             "board may rank players on features that are known "
+                             "not to predict out of sample.")
     args = parser.parse_args()
 
     build_board(
@@ -1286,4 +1734,5 @@ if __name__ == "__main__":
         config_path=args.config,
         version=args.version,
         build_note=args.note,
+        skip_gate=args.skip_gate,
     )

@@ -9,8 +9,46 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 FFC_TEAMS = 12
 FFC_YEAR = 2026
-FFC_FORMAT = "ppr"  # PPR, non-superflex -- matches league_config.json
+FFC_FORMAT = "ppr"  # PPR, non-superflex -- matches league_config_lebronjames.json
 OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
+
+# ADP variants pulled on every run, and the column suffix each gets.
+#
+# WHY A SECOND FORMAT EXISTS (Aug 6)
+# ----------------------------------
+# The 32-team league starts a SUPERFLEX, and `ppr` ADP comes from
+# one-quarterback mocks. That is not a small-sample problem, it is the
+# wrong question: in a superflex room quarterbacks come off the board
+# earlier and roughly twice as deep, so the `ppr` position mix
+# understates QB demand by a wide, KNOWN margin. Feeding it to
+# compute_replacement_ranks() sets QB replacement far too shallow and
+# systematically undervalues every quarterback on that board.
+#
+# FFC has no `superflex` endpoint. It has `2qb`, which is live for 2026,
+# and that is the closest honest proxy -- with one caveat that has to
+# stay attached to the number: 2QB REQUIRES two starting quarterbacks
+# while superflex merely PERMITS a second, so `2qb` ADP overstates QB
+# demand somewhat. The bias runs opposite to `ppr`'s and is much
+# smaller. Bracketing the truth between two feeds is worth more than
+# picking one and forgetting which way it leans.
+#
+# Both are attached to every player in one pass so that all boards still
+# ship from a single model run (Phase 13 CP4). The board picks its column
+# via `adp_format` in the league config; nothing here knows about
+# leagues.
+ADP_VARIANTS = {
+    "ppr": "",       # canonical, unsuffixed -- what every existing board reads
+    "2qb": "_2qb",   # superflex proxy
+}
+
+# Columns that describe the DRAFT and therefore differ by format.
+FORMAT_SPECIFIC_COLUMNS = [
+    "adp", "adp_formatted", "times_drafted", "adp_high", "adp_low", "adp_stdev",
+]
+# Columns that describe the PLAYER and are identical across formats. Taken
+# from the canonical variant only, so a second pull can't create a second
+# copy of the bye week that later disagrees with the first.
+FORMAT_INVARIANT_COLUMNS = ["bye"]
 
 SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
@@ -80,13 +118,17 @@ def build_gsis_lookup():
     return players
 
 
-def attach_adp(player_features):
-    ffc_adp = fetch_ffc_adp()
-    gsis_lookup = build_gsis_lookup()
+def match_adp_to_gsis(ffc_adp, gsis_lookup, adp_cols):
+    """
+    Resolves one FFC ADP pull to gsis_ids.
 
-    adp_cols = ["player_id", "adp", "adp_formatted", "times_drafted",
-                "adp_high", "adp_low", "adp_stdev", "bye"]
-
+    Extracted from attach_adp() unchanged (Aug 6) so that a second ADP
+    format reuses the SAME matching rules rather than growing a parallel
+    copy of them. The name normalization, the unique-name fast path, and
+    the team tiebreak are all subtle enough that two implementations
+    would drift, and the drift would show up as one format silently
+    matching fewer players than the other.
+    """
     name_counts = gsis_lookup.group_by("name_key").agg(pl.len().alias("n"))
     unique_names = name_counts.filter(pl.col("n") == 1).select("name_key")
     ambiguous_names = name_counts.filter(pl.col("n") > 1).select("name_key")
@@ -131,10 +173,55 @@ def attach_adp(player_features):
     all_matches = pl.concat([clean_matches, team_matches], how="vertical")
     all_matches = all_matches.unique(subset=["player_id"], keep="first")
 
-    print(f"\nMatched {all_matches.height} / {ffc_adp.height} FFC ADP entries to a gsis_id")
+    print(f"  matched {all_matches.height} / {ffc_adp.height} FFC entries to a gsis_id")
+    return all_matches
 
-    result = player_features.join(all_matches, on="player_id", how="left")
-    result = result.with_columns(pl.col("adp").is_not_null().alias("has_adp"))
+
+def attach_adp(player_features, variants=None):
+    """
+    Attaches one ADP column set per format in ADP_VARIANTS.
+
+    The canonical `ppr` variant keeps the unsuffixed column names every
+    existing board and chart already reads, so nothing downstream changes
+    unless it asks for a suffix. `2qb` arrives alongside as `adp_2qb`,
+    `has_adp_2qb`, and so on, for the superflex board to select via its
+    config.
+
+    A variant that fails to fetch is WARNED about and skipped rather than
+    killing the run -- losing the superflex proxy should not cost you the
+    two boards that don't use it. But it is never silently absent: if the
+    canonical variant is what failed, that raises, because every board
+    depends on it.
+    """
+    variants = variants or ADP_VARIANTS
+    gsis_lookup = build_gsis_lookup()
+
+    result = player_features
+    for adp_format, suffix in variants.items():
+        print(f"\nADP pull: format={adp_format!r} teams={FFC_TEAMS} year={FFC_YEAR}")
+        try:
+            ffc_adp = fetch_ffc_adp(adp_format=adp_format)
+        except Exception as exc:  # noqa: BLE001 -- network/feed shape, both non-fatal
+            if suffix == "":
+                raise
+            print(f"  WARNING: {adp_format!r} pull failed ({exc}). Skipping.")
+            print(f"  Boards configured with adp_format={adp_format!r} will have NO ADP "
+                  f"and their replacement levels will fall back to starter slots.")
+            continue
+
+        # `bye` only comes along with the canonical pull -- see
+        # FORMAT_INVARIANT_COLUMNS.
+        wanted = FORMAT_SPECIFIC_COLUMNS + (FORMAT_INVARIANT_COLUMNS if suffix == "" else [])
+        matches = match_adp_to_gsis(ffc_adp, gsis_lookup, ["player_id"] + wanted)
+
+        if suffix:
+            matches = matches.rename({c: f"{c}{suffix}" for c in wanted})
+
+        result = result.join(matches, on="player_id", how="left")
+        result = result.with_columns(
+            pl.col(f"adp{suffix}").is_not_null().alias(f"has_adp{suffix}")
+        )
+
     return result
 
 

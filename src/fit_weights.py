@@ -135,25 +135,54 @@ ALPHA = 0.10
 # helping receivers, which is not a finding). This is Phase 13 CP3's
 # question, answered early because the wider window forced it. Renamed
 # rather than silently redefined, per the plan's own instruction.
+# CUTS FROM PHASE 13 CP2'S HOLDOUT (Aug 6). Three features and one whole
+# position were removed from these candidate lists after failing
+# out-of-sample validation across three folds (2025, 2024, 2023). They
+# are removed from the CANDIDATE LIST, not merely unshipped, because
+# leaving them here means alpha can readmit them on the next refit --
+# and alpha is precisely the bar that passed them in the first place.
+#
+#   WR `usage_trend_share`  Selected in 1 of 3 training folds, ablation
+#   WR `trend_missing`      value -0.016 and -0.008 when selected. This
+#                           file pre-registered usage_trend_share as
+#                           "the first coefficient that should fall if
+#                           Phase 13 CP2's holdout disagrees." It
+#                           disagreed. The call was made before the
+#                           evidence arrived, which is the only reason
+#                           it is worth anything.
+#
+#   RB `qb_changed`         Same profile: 1 of 3 folds, -0.031 when
+#                           selected. Consistency requires cutting it on
+#                           the same rule that cut the WR pair.
+#
+# Everything retained beats a constant in all three folds. `age` is the
+# most valuable feature in the model by ablation (+0.189 at RB, +0.161 at
+# WR), and RB/WR/TE as a whole clear LEVEL by +0.313 / +0.363 / +0.119.
 FEATURE_SPECS = {
-    "RB": ["qb_changed", "workload_share", "age", "usage_trend_share",
+    "RB": ["workload_share", "age", "usage_trend_share",
            "trend_missing", "position_competition_ppg"],
-    "WR": ["team_changed", "workload_share", "recent_major_injury", "age",
-           "usage_trend_share", "trend_missing"],
+    "WR": ["team_changed", "workload_share", "recent_major_injury", "age"],
     "TE": ["workload_share", "age", "usage_trend_share", "trend_missing",
            "position_competition_ppg"],
-    # QB carries a weight for the first time in the project's history.
+    # QB IS ABSENT, AND THAT IS A REVERSAL OF PHASE 10'S HEADLINE.
     #
-    # Phases 5 and 6 found nothing across every specification tried, and
-    # Phase 10 initially retested with age on three seasons at p=0.68.
-    # On five seasons (n=157 vs 96) age lands at -0.19 PPG per year,
-    # p=0.020. The effect was always there; there were not enough
-    # quarterback-seasons to see it -- the same story as WR usage trend.
+    # "QB carries a weight for the first time in the project's history"
+    # was the claim: age at -0.19 PPG per year, p=0.020 on 157
+    # quarterback-seasons, sign-stable across all nine leave-one-season-
+    # out folds. Every in-sample check this project had, passed.
     #
-    # Age only. Everything else retested on the wider sample is still
-    # dead: qb_changed p=0.14, coach_changed p=0.94, team pace p=0.38,
-    # o-line p=0.65, injury p=0.84, team_changed p=0.79.
-    "QB": ["age"],
+    # The holdout says 1 of 3 folds, mean -0.023 RMSE against a
+    # constant. It does not predict. LOSO stability was never evidence
+    # of prediction -- it asks whether a coefficient moves when a season
+    # is withheld, not whether it forecasts a season it has not seen --
+    # and this is the clearest demonstration in the project of the gap
+    # between those two questions.
+    #
+    # With QB removed from this dict, apply_situational_weights() passes
+    # quarterbacks through with a zero adjustment, exactly as it did from
+    # Phase 5 through Phase 9. SUPPRESS_LEVEL_SHIFT below still names QB
+    # and is now moot; it is left in place because if QB is ever refitted
+    # the selection artifact it describes will still be there.
 }
 
 # Features entered as deviations from the position mean. The mean is

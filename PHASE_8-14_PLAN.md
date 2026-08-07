@@ -6,7 +6,7 @@ adjustments trustworthy rather than just present.
 
 Ground rules carried over unchanged: statistics only, no analyst opinions, ADP is a
 reference column and never a model input. League rules unchanged from Phase 7
-(12-team full PPR, 6-pt pass TD, 16 rounds, keeper rules per `league_config.json`).
+(12-team full PPR, 6-pt pass TD, 16 rounds, keeper rules per `league_config_lebronjames.json`).
 
 ---
 
@@ -865,6 +865,575 @@ situational adjustment at all.
   rookie ranks are defensible against the veteran pool.
 - **Risk:** n is small (5 classes). If coefficients are unstable, fall back to the
   shrinkage haircut and say so explicitly rather than shipping a fragile model.
+
+### Phase 12 — CODE WRITTEN, NOT YET RUN (Aug 6)
+
+All three checkpoints are implemented and unexecuted. The fit has not happened, so
+**every claim below is about the code, not about a result.** Nothing here says the
+rookie model works.
+
+New files: `src/rookie_backtest.py` (CP1), `src/fit_rookie_weights.py` (CP2),
+`src/verify_rookies.py` (CP3). Run in that order, then `python -m src.pipeline`.
+
+Two leakage guards are the substance of CP1, and both are places this phase would
+otherwise have produced a good-looking wrong answer:
+
+- **Leave-one-class-out cohort baselines.** `rookies.py` averages PPG across all of
+  2021–25. Using that as the baseline for a 2023 rookie measures his delta against a
+  number that already contains 2023. At n=5 each class is a fifth of its own
+  baseline, so this is not a rounding concern — it shrinks delta toward zero for
+  reasons unrelated to any feature, and the features then get credit for variance the
+  baseline already ate.
+- **Week-1 depth chart, not the latest.** The live path reads the newest snapshot,
+  which is right for a season that hasn't started. Reading the newest snapshot of a
+  *finished* season reads `pos_rank 1` for a rookie **because** he broke out. The
+  earliest snapshot is the closest analog nflverse offers — still imperfect, since a
+  team's first scrape may land later than the August snapshot the live model sees, so
+  treat any `pos_rank` coefficient as an optimistic ceiling.
+
+Also settled in CP1: **the cohort baseline is computed after the `MIN_GAMES` filter,
+over exactly the rows that get fitted.** Both sides of the delta then move together
+and the level nets out, which is why `SUPPRESS_LEVEL_SHIFT` is empty here where the
+veteran fit needs it for QB. A large rookie intercept is therefore a *symptom* — it
+means the filter and the baseline came apart — and `fit_rookie_weights` prints a
+banner past ±1.5 PPG.
+
+**The fallback is wired, not just documented.** `fit_is_trustworthy` is per position
+(something cleared alpha *and* nothing flipped sign across the five folds), and
+`ranking.load_rookie_weights()` silently drops the rest. A position that fails keeps
+the flat cohort baseline — exactly what it had before Phase 12 — so failure costs
+nothing and there is no path by which a fragile coefficient reaches a board.
+
+**Open question for whoever runs it.** `COHORT_SEASONS` is five classes because
+`load_depth_charts()` is thin before 2021. If `pos_rank` fails to earn its slot, that
+constraint is gone and the window can widen to 2017 for one re-run. Check that
+**before** concluding that n is the binding problem.
+
+### 32-team superflex league added (Aug 6)
+
+`league_config_32team.json`. 32 teams, 10 rounds, weeks 1–14 / playoffs 15–17, no
+keepers, 4-point passing TDs, −1 interceptions. Roster is 2 RB / 2 WR / 1 TE / 1 FLEX
+/ 1 SUPERFLEX / 3 bench — **no dedicated QB slot and no K or DST**, both confirmed
+deliberate.
+
+Four things broke or would have, none of them loudly:
+
+1. **`UNMODELED_SLOTS_PER_TEAM` was a hardcoded 2.** Correct for both leagues that
+   existed when it was written, which is exactly why it looked like a constant. This
+   league starts no kicker and no defense, so it would have removed 64 picks from a
+   320-pick draft that does not spend them — replacement level ~20% too shallow at
+   every position, every VOR inflated, no error anywhere. Now derived from
+   `roster_slots`. `make_charts_phase11.py` held a duplicate copy and now imports.
+2. **`SUPERFLEX_SPLIT` added.** Without it `compute_starter_ranks()` gives QB zero
+   starters, since this league has no QB slot for the count to read, and the floor
+   that currently holds QB replacement honest (QB27) would not exist.
+3. **`verify_adjustments.py` would have raised `ValueError`.** `deep, shallow =
+   list(configs.keys())` unpacks exactly two. Named explicitly now, with a soft check
+   for the superflex direction — nothing in that file could previously catch a
+   `SUPERFLEX` slot being ignored.
+4. **Scoring was computed once, for one league.** See below. This is the serious one.
+
+### Every projection was in Lebron James scoring (Aug 6)
+
+`features.py` scores every player under `league_config_lebronjames.json` and nothing
+downstream re-expresses it. Invisible until now because the 12-team and 6-team configs
+differ in teams, weeks and keepers — and in nothing that touches a point value.
+
+The 32-team league is the first with different **scoring**. Uncorrected, its board
+would rank quarterbacks on numbers **2.5–3.5 PPG too high apiece**, in a superflex
+league where QB is the scarcest position and 27 of them come off the board. Nothing
+would have raised; the columns all populate and every number looks plausible. The
+board would simply have told you to draft quarterbacks.
+
+`build_board.rescore_for_league()` fixes it exactly rather than approximately —
+`passing_tds_per_game` and `passing_interceptions_per_game` are already in
+`player_features.csv`, and `pass_td`/`interception` are the only scalar keys that
+differ. **Any other differing key raises** rather than being silently ignored, because
+a league that changes `reception` makes this arithmetic incomplete and a wrong answer
+would be worse than a crash.
+
+Two known gaps, neither papered over:
+
+- ~~**Rookie QBs cannot be rescored.**~~ **FIXED (Aug 6).** The fix came from noticing
+  what a cohort baseline *is*: the mean PPG of a set of real rookie seasons. The mean
+  passing TD and interception rate of that **same set** is therefore the honest rate to
+  correct that baseline with — the same average over the same players, one column
+  across. Nothing modelled, nothing invented.
+
+  `rookies.aggregate_rookie_season()` now carries those rates through to
+  `player_features.csv`, so rookie QBs take the identical rescore path as veterans with
+  no special case anywhere. Carried at skill positions too, where they are ~0 — not
+  because a rookie receiver's passing matters, but so neither the CSV schema nor the
+  lookup needs a "QB is special" branch, and a branch is what would rot.
+
+  Note the magnitude is **smaller than the veteran correction**, and for a real reason:
+  rookie QBs throw fewer touchdowns, so a −2/TD change costs them less. Roughly −1.1 to
+  −1.6 PPG against −2.3 to −3.3 for established starters. The earlier "~2–3 PPG"
+  estimate was veteran rates applied to rookies.
+
+  `apply_rookie_baselines()` **raises** on baseline CSVs predating the new columns
+  rather than joining nulls — the failure mode being prevented is precisely a silent
+  return to the bug. `rescore_for_league()`'s warning is now keyed on the rate actually
+  being null rather than on `is_rookie`, so it stays true as the data changes.
+- **The fitted weights were fitted in base scoring.** QB carries one weight (`age`,
+  −0.19 PPG/yr) with its level shift already suppressed, so the residual is a fraction
+  of a point and reorders nothing. Recorded because it is real, not because it is
+  urgent. A league that changed `reception` would make it matter at every position at
+  once, and that league is the one that should refit.
+
+### Superflex ADP — a second feed, not a fudge (Aug 6)
+
+`adp.py` pulled `ppr` only, i.e. one-QB mocks. For a superflex board that feed is not
+noisy, it is **biased in a known direction**: quarterbacks come off the board earlier
+and roughly twice as deep than it will ever show, so `compute_replacement_ranks()`
+sets QB replacement far too shallow and undervalues every QB. This is the plan's
+existing `teams=12` caveat one step worse — there the mix is the wrong *size*, here it
+is the wrong *shape*.
+
+FFC publishes no `superflex` endpoint. It publishes `2qb`, live for 2026, and that is
+now pulled alongside `ppr` on every run and attached as `adp_2qb` etc. Leagues select
+via `"adp_format"` in the config; `build_board.select_adp_variant()` remaps the
+suffixed columns onto the canonical names once, so nothing downstream learns there was
+a choice and all boards still ship from one model run (CP4 holds).
+
+**The caveat that has to stay attached to the number:** 2QB *requires* a second
+starting quarterback where superflex only *permits* one, so `2qb` overstates QB demand
+somewhat. That bias runs opposite to `ppr`'s and is much smaller. Bracketing the truth
+between two feeds beats picking one and forgetting which way it leans. Printed at
+build time, not left in a comment.
+
+### Phase 12 — FIRST FIT (Aug 6)
+
+n=241 rookie-seasons over five classes: QB 20, RB 68, TE 44, WR 109. Mean delta
+overall +0.045, against ~0.000 for an in-sample baseline — the leave-one-class-out
+guard is engaged. Per-position deltas run +0.19 / +0.08 / −0.14 / −0.21 against
+**standard deviations of 3.0–4.7**, which is the number to hold onto: rookie outcomes
+inside a (position, round) cell vary by 3–5 PPG and the features are trying to explain
+a slice of that.
+
+**What survived.**
+
+| Pos | n | R² | shipped |
+|---|---|---|---|
+| QB | 20 | — | not fitted, below `MIN_ROWS_TO_FIT` |
+| RB | 68 | 0.101 | `rush_att_pg` −0.444 (p=0.043) |
+| WR | 109 | 0.024 | `position_competition_ppg` −0.530 (p=0.065) |
+| TE | 43 | — | nothing cleared alpha |
+
+**WR `position_competition_ppg` is the phase's actual result**, and it is the one that
+was supposed to be. Negative, as predicted — better incumbents means fewer targets —
+and stable across all five folds (−0.39 to −0.68). It is the only feature in the set
+that distinguishes two same-round rookies on different teams by something other than
+team pace, and it is the reason Love and Price no longer tie. R²=0.024 is small and
+should be quoted whenever the coefficient is.
+
+**RB `rush_att_pg` came out NEGATIVE, and it is not measuring what its name says.**
+A rookie back landing on a high-volume rushing team does *worse* against his cohort.
+The coherent reading is that heavy rushing volume is evidence a team already has an
+established back — so this is a competition proxy, arriving at a position where
+`position_competition_ppg` itself failed (p=0.32). Worth testing directly in Phase 13
+rather than left as an inference: if the two are measuring one thing, the better-named
+one should be able to do the job.
+
+**RB `age` was dropped after the folds, and this changed the fitter.** It cleared alpha
+at p=0.052 with no sign flip anywhere, which reads as stable until the folds are
+actually read: 0.918, 1.126, 1.314, 0.739, **0.286**. Withholding one class moves it by
+4.6× end to end. Sign stability was the only LOSO bar the veteran fit ever needed, and
+it passed something it should not have.
+
+`fit_rookie_weights` now also flags **magnitude** instability (`STABILITY_RATIO = 3.0`,
+deliberately loose — every fold shares 80% of its rows with the shipped model) and adds
+a **stage 3**: drop the unstable, refit once, re-run LOSO. Once, not in a loop —
+iterating until everything passes is fitting the fold structure, which at five folds is
+fitting five numbers. Stage 3 is what saves RB: `rush_att_pg` is solid across every
+fold and would otherwise have been discarded along with `age`, since trustworthiness is
+judged per position.
+
+**Two checks were wrong and both cried wolf.**
+
+- **The intercept banner.** RB's intercept is +12.04 PPG and the check fired. It is
+  meaningless: `rush_att_pg` enters *uncentered* with a mean near 26.5 and a
+  coefficient of −0.444, so the intercept must carry +11.8 just to cancel it. An
+  intercept is only a level when every feature is centered, and only `age` and `pick`
+  are. The check now reads the fitted value at the feature means — which OLS forces to
+  equal mean(delta) — giving +0.19 at RB and +0.08 at WR. Same lesson this project
+  keeps relearning, applied one step earlier than usual: a coefficient means nothing
+  apart from the constants it was fitted with, and that governs *reading* them too.
+- **The separation check counted players, not teams.** It failed on WR round 3 (9
+  players, 8 distinct) and round 6 (7, 6) — one duplicate pair each, both same-team.
+  Two rookies on the same team at the same position in the same round are identical in
+  every feature the model has and *should* tie; separating them would mean inventing
+  something. CP3 asked about different teams, and the check now asks that.
+
+**Shipped after stage 3.** RB `rush_att_pg` −0.364 (folds −0.257 to −0.487), WR
+`position_competition_ppg` −0.530 (folds −0.391 to −0.681). RB's R² falls 0.101 → 0.056
+once `age` is removed, which is the honest number: most of what `age` was explaining was
+one class. All four `verify_rookies` sections pass — reconciliation to 1e−8 at both
+positions, 12 of 12 cells separating by team, rookies at 2.8–11.1% of each position's
+top 36, no cross-contamination.
+
+QB and TE tie across teams in every cell, correctly and visibly — the harness marks them
+`<-- TIE ACROSS TEAMS` without judging them, which is what the flat cohort baseline
+looks like when it is still in force.
+
+**Standing gaps.** QB has no rookie model (n=20 against 4 rows per feature) and rookie
+QBs are also stranded in base scoring — both landing on the same position, on the board
+most sensitive to it. TE fits nothing. `COHORT_SEASONS` can widen to 2017 now that
+`pos_rank` failed everywhere, since depth-chart coverage was the only reason for the
+narrow window; that is the cheapest available shot at QB and TE.
+
+**MODEL_VERSION 12 → 13, and it nearly didn't happen.** Phase 12 was built alongside a
+new league and the attention was on that league — but `ranking.apply_situational_weights`
+is shared, so the moment `rookie_weights.json` appeared, rookie ranks moved on **all
+three boards**, not just the 32-team one. That is a ranking-logic change by this
+constant's own definition. Shipping it under v12 would have put two different models
+under one version number, which is the Build History problem one level up: there it was
+three rebuilds of one version, here it would have been two models. **All three boards
+need rebuilding off the bump** — the 12-team and 6-team files on disk predate Phase 12
+and are now stale in a way their filenames do not admit.
+
+**One reporting bug worth recording**, because it is the same shape as several real
+ones: the run printed "DROPPED AFTER LEAVE-ONE-CLASS-OUT" followed by nothing. Stage 3
+overwrote the flag list with the *refitted* model's flags, which are empty whenever the
+refit succeeded. "What got dropped" and "does what remains hold up" are different
+questions and now have different keys (`instability_flags`, `residual_instability`).
+Nothing numeric was affected — but a diagnostic that silently reports the wrong model is
+how Phase 6 went unnoticed for two phases.
+
+### Phase 12 — window widened to 2017–2025 (Aug 6)
+
+`COHORT_SEASONS` now matches `backtest.py`. 241 rookie-seasons becomes roughly 430.
+
+**Why this is not fishing, which is the first thing to ask.** The window is being changed
+*after* seeing QB and TE fail, which is exactly the shape of move `fit_weights` warns
+about under ON MULTIPLE TESTING. It is defensible for one specific reason, and if that
+reason does not hold this should be reverted: **the 2021 floor was never a judgement
+about the right amount of history.** It was a data constraint, stated as such at the
+time — `load_depth_charts()` is thin before 2021 and `pos_rank` was the only feature
+needing it. That constraint is void, because `pos_rank` failed at every position
+(p = 0.16 to 0.54) and is being removed. Dropping a constraint whose stated
+justification no longer applies is not the same as widening until something passes.
+
+Alpha stays at 0.10, the candidate list does not grow, and this is recorded as a
+**second look at the same hypotheses** — a feature clearing alpha here that did not at
+five classes deserves more suspicion, not less.
+
+**The trap it opens, and the guard.** Had `pos_rank` been kept, `depth_chart_missing`
+would stop meaning "this rookie was buried" and start meaning "this season predates good
+scraping" — a season label wearing a feature's name. It would very likely test
+significant, because early and late classes differ for a hundred reasons, and the
+coefficient would be uninterpretable. Worse than no feature, because it looks like a
+finding.
+
+`season_confounded_features()` computes each candidate's missing rate per class and
+**removes** any whose spread exceeds `SEASON_CONFOUND_SPREAD = 0.35`, along with its
+companion indicator. Removal rather than warning is deliberate: a warning arrives after
+the number exists, and numbers that exist get used. `rookie_backtest` prints the
+per-class coverage table so the decision is legible rather than magic.
+
+One consequence worth noting because it would have been a silent failure:
+`verify_rookies` rebuilds the fit sample to check reconciliation, and reading
+`FEATURE_SPECS` after the filter had removed something would drop nulls on a different
+column set, changing which rows survive and breaking the OLS identity for reasons
+unrelated to the weights. The effective spec now ships in the JSON as
+`features_considered` rather than being recomputed in two places.
+
+**Expected outcome, stated before the run.** RB ~122, WR ~196, TE ~79 — all comfortably
+fitted. **QB ~36, still below `MIN_ROWS_TO_FIT = 40`.** Roughly four rookie
+quarterbacks per class clear `MIN_GAMES`, and nine classes does not fix that. TE is the
+position this stands to help; QB needs a different idea, not more of the same seasons.
+
+### Phase 13 CP2 — HOLDOUT VALIDATION, RUN AT LAST (Aug 6)
+
+Three folds: hold out 2025, 2024, 2023, refit on the rest, predict the held-out season.
+`src/holdout.py`. Every R² this project has ever quoted was in-sample; this is the first
+out-of-sample evidence it has.
+
+**The plan's test had a hole, found while writing it.** CP2 asked "does the model beat
+the raw baseline out of sample?" — a bar a model of pure noise can clear, because the
+intercept alone clears it and the intercept is not a feature. So there are three
+predictors: **RAW** (delta = 0), **LEVEL** (delta = the training mean, no features), and
+**MODEL**. The number that matters is **MODEL vs LEVEL**. As it happens LEVEL beats RAW
+by at most ±0.04 anywhere, so the intercepts are contributing nothing and the veteran
+gains are genuinely features — but that had to be measured, not assumed.
+
+| model / pos | 2025 | 2024 | 2023 | mean | folds passed |
+|---|---|---|---|---|---|
+| veteran RB | +0.155 | +0.291 | +0.491 | **+0.313** | 3/3 |
+| veteran WR | +0.420 | +0.425 | +0.245 | **+0.363** | 3/3 |
+| veteran TE | +0.160 | +0.085 | +0.112 | **+0.119** | 3/3 |
+| veteran QB | +0.104 | −0.128 | −0.044 | −0.023 | 1/3 |
+| rookie RB | −0.153 | 0.000 | −0.143 | −0.099 | 0/3 |
+| rookie WR | 0.000 | 0.000 | 0.000 | 0.000 | 0/3 |
+| rookie TE | +0.038 | +0.327 | +0.234 | +0.200 | 2/3 |
+
+**The veteran model is real.** RB, WR and TE beat a constant in every fold, and `age` is
+the workhorse throughout (+0.189 RB, +0.161 WR by ablation). Nine phases of work on
+those three positions survives its first honest test. That is the headline and it should
+be said before the rest.
+
+**QB `age` does not survive, and it was Phase 10's headline finding.** "QB carries a
+weight for the first time in the project's history" — 1/3 folds, mean −0.023. The
+in-sample story was coherent (p=0.020 on 157 quarterback-seasons, stable across all nine
+LOSO folds) and it is still wrong out of sample. LOSO stability was never evidence of
+prediction, which is exactly why this file exists.
+
+**`usage_trend_share` at WR falls, as it was pre-committed to.** `fit_weights` recorded
+it as "the first coefficient that should fall if Phase 13 CP2's holdout disagrees." It
+disagrees: selected in only 1 of 3 training folds, and negative (−0.016) when selected.
+`trend_missing` at WR is the same story (1 fold, −0.008). The pre-registration worked —
+the call was made before the evidence arrived and the evidence settled it.
+
+**The rookie model largely does not survive, one day after being built.**
+
+- **rookie RB: 0/3, and `position_competition_ppg` actively hurts (−0.148 mean).**
+- **rookie WR: 0/3, and it is the strongest negative in the table.** The feature failed
+  to clear alpha in *every* training fold. It only becomes significant when the test
+  season is included in the fit — which is the definition of the thing a holdout is for.
+- **rookie TE: 2/3, mean +0.200 — but read which feature.** `age` carries it (+0.235),
+  `pos_rank` barely registers (+0.055). That is the **reverse** of the in-sample fit,
+  where `pos_rank` had the larger coefficient (−1.03 vs −0.76) and `age` looked
+  secondary. The suspicion recorded when `pos_rank` doubled its coefficient on the
+  second look was correct.
+
+  **Caveat that has to travel with this:** rookie TE test folds are n = 10, 7, 9. A
+  +0.327 RMSE gain on seven players is not a finding. It is the least-evidenced cell in
+  the table and it survives on the strength of the feature, not the sample.
+
+**What this cost.** Phases 10 and 12 lose most of what they claimed. That is the system
+working — the alternative was carrying four fictional features into a draft. But it also
+says something about the standard of evidence used up to now: every one of these cleared
+alpha, several cleared it twice, and LOSO stability passed them all.
+
+### Two verification checks had drifted from what ships (Aug 6)
+
+Both found by reading output that said everything was fine. Same failure in two places:
+**a check that reimplements part of the shipping path instead of calling it.**
+
+**1. "rookies take no situational adjustment" went stale the day Phase 12 shipped.**
+True from Phase 5 to Phase 11, false the moment `rookie_weights.json` existed. It
+hard-FAILED and printed *"Do not build a board from this"* about boards that were
+correct — and `build_board` does not read that file, so they built anyway. A gate that
+says stop while the thing it guards proceeds trains you to ignore it, which is worse
+than having no gate. Now asserts the real invariant: rookies at positions with **no**
+rookie model must be exactly zero.
+
+**2. `check_replacement_levels` was measuring a board that does not exist.**
+`build_board` applies `select_adp_variant()` and `rescore_for_league()` before it touches
+any PPG or ADP column. This check skipped both. Harmless for the two original leagues —
+default feed, base scoring, nothing to transform — and wrong for the 32-team one:
+
+| | QB | RB | WR | TE | feed |
+|---|---|---|---|---|---|
+| checker | 53 | 109 | 125 | 39 | ppr, 202 picks |
+| board | 43 | 89 | 140 | 48 | 2qb, 184 picks |
+
+QB replacement off by ten places, WR by fifteen, and quarterbacks compared at 6-point
+passing TDs — which is most of why its top-30 showed 14 of them. **It passed**, on
+numbers belonging to no board anyone would draft from. That is the more dangerous kind
+of wrong.
+
+**3. And then the replacement fix reintroduced it.** The rewritten superflex check
+recomputed replacement ranks itself, *after* the per-league loop, reading the leaked
+`players` variable — which by then held the 32-team frame, already switched to the `2qb`
+feed and 4-point scoring. It reported the 12-team league at **QB36** while the loop three
+lines above printed **QB22** for the same league. It passed, on a number belonging to no
+league.
+
+Three instances of one bug in one day, the third written by the hand fixing the second.
+The loop's own results are now captured per label and the check reads those;
+`compute_replacement_ranks` is called in exactly one place in the file. Removing the
+opportunity beats restating the rule.
+
+The generalizable rule, and the one all three fixes encode: **a check that reimplements
+part of the shipping path must call the shipping path.** It is the same principle
+`verify_adjustments` was founded on — run `ranking.apply_situational_weights`, not a
+restatement of it — applied one level out to the league-specific transforms.
+
+### What the fix revealed: superflex barely lifts QB at 4 points (Aug 6)
+
+Once the check read the right feed and the right scoring, quarterbacks in the superflex
+top 30 went **14 → 1** — the same as the 12-team board. That is not a bug, and it is
+probably the most useful thing on that board.
+
+| pos | player | PPG | replacement | repl PPG | VOR |
+|---|---|---|---|---|---|
+| QB | Josh Allen | 23.76 | QB43 | 12.20 | 11.56 |
+| WR | Puka Nacua | 20.21 | WR140 | 4.57 | **15.64** |
+| RB | Jahmyr Gibbs | 20.59 | RB89 | 5.28 | **15.31** |
+
+Allen outscores Nacua by 3.6 PPG and is worth 4.1 *less*. Two things stack: at 4-point
+passing TDs an elite QB loses ~3 PPG against the 6-point assumption everyone's superflex
+advice is built on, and quarterbacks have high floors — the 43rd-best QB still scores 12
+where the 140th-best WR scores 5. VOR is a *distance* above replacement, and at QB that
+distance is compressed however many come off the board.
+
+**Practical read for that draft: do not pay superflex prices for quarterbacks.** The
+room will, because superflex convention assumes 6-point passing. That gap is an edge, and
+it is the one place this board disagrees loudly with consensus.
+
+The top-30 count was the wrong instrument for the check, though — it was built to catch a
+`SUPERFLEX` slot being silently ignored, and that shows up in replacement **depth**,
+upstream of scoring and VOR compression. Now asserted directly: superflex must draft
+deeper at QB than the 1-QB league (QB43 vs QB22) and must respect its own starter floor.
+Both hard checks, because both are structural facts rather than judgement calls.
+
+### Cuts applied, and the gate (Aug 6)
+
+Removed from the **candidate lists**, not merely unshipped — leaving them in means alpha
+can readmit them at the next refit, and alpha is the bar that passed them to begin with.
+
+| Cut | Evidence |
+|---|---|
+| veteran QB `age` (position removed) | 1/3 folds, mean −0.023 |
+| veteran WR `usage_trend_share` | 1/3 folds selected, −0.016 when selected |
+| veteran WR `trend_missing` | 1/3 folds selected, −0.008 |
+| veteran RB `qb_changed` | 1/3 folds selected, −0.031 |
+| rookie RB (position removed) | 0/3, feature −0.148 |
+| rookie WR (position removed) | 0/3, never cleared alpha in any fold |
+| rookie QB (position removed) | never fittable — 35 rows against a 40 threshold |
+| rookie TE `pos_rank` | +0.055 against `age`'s +0.235 |
+
+What ships: **veteran RB / WR / TE**, and **rookie TE on `age` alone**. QBs take a zero
+adjustment, as they did from Phase 5 through Phase 9. Cutting `pos_rank` also retires the
+week-1-versus-August depth chart mismatch — the model no longer leans on a feature
+measured at a different moment than it is applied.
+
+**The gate.** `python -m src.holdout --gate` runs all three folds, writes
+`data/holdout_gate.json`, and exits non-zero on failure. `build_board` refuses to build
+without a passing gate.
+
+The rule, fixed so it cannot drift: a shipped **position** must beat a constant on
+average across folds; a shipped **feature** must have non-negative mean ablation value.
+Averages, not unanimity — one bad fold in three is noise, and demanding 3/3 would cut
+features that are real.
+
+Three ways to fail, and the third is the one that matters: **MISSING** (never validated),
+**FAILED** (something shipped has no out-of-sample value), and **STALE** — the weights
+are newer than the gate. Mtimes are compared rather than just reading `passed`, because
+refitting after a green gate leaves a passing file describing a model that no longer
+exists. A green light for the wrong model is worse than no light. Same failure the Build
+History sheet was added to solve, and the same shape as the stale-weights check already
+in `verify_adjustments`.
+
+`--skip-gate` exists and says so loudly in the output. It is for emergencies, not for
+when the gate is inconvenient.
+
+### Phase 12 — refit on nine classes (Aug 6)
+
+415 rookie-seasons, up from 241. All four sections of `verify_rookies` pass, 16 of 16
+cells separate by team, and **TE now fits.**
+
+**The 2021 floor was based on an assumption nobody checked, and it was wrong.**
+Depth-chart missingness across 2017–2025 runs 0% to 13.6%, spread 0.14 — comfortably
+inside the 0.35 confound bar. Coverage was never thin. The constraint that shaped the
+entire phase, that forced n=5, and that was cited as the reason QB and TE could not be
+fitted, did not exist. It cost this phase its statistical power for four classes'
+worth of data that was sitting there the whole time.
+
+| Feature | coef @5 | p @5 | coef @9 | p @9 | |
+|---|---|---|---|---|---|
+| RB `rush_att_pg` | −0.410 | 0.043 | −0.220 | 0.125 | dropped out |
+| RB `position_competition_ppg` | −0.334 | 0.321 | −0.414 | 0.063 | **swapped in** |
+| WR `position_competition_ppg` | −0.629 | 0.065 | −0.434 | 0.095 | held |
+| TE `pos_rank` | −0.574 | 0.541 | −1.181 | 0.044 | **swapped in, coef ×2.06** |
+| TE `age` | −0.791 | 0.117 | −0.681 | 0.045 | **swapped in, coef ×0.86** |
+
+**The RB swap answers the question this plan carried to Phase 13, early and cleanly.**
+The five-class note read: *"if `rush_att_pg` and `position_competition_ppg` are
+measuring one thing, the better-named one should be able to do the job."* On nine
+classes it does. `rush_att_pg` falls to p=0.125 and `position_competition_ppg` takes
+over. RB and WR now ship the same feature, which is the coherent result — competition
+for touches is the rookie landing-spot story at both positions, and `rush_att_pg` was
+a worse-named proxy for it that only won on a sample too small to separate them.
+
+**R² FELL at RB (0.101 → 0.037) and WR (0.024 → 0.011) on more data, and that is an
+improvement.** The five-class fits were partly describing their own sample. A lower R²
+carried by a feature that holds across nine folds is a better model than a higher one
+carried by a feature that does not — and RB's old headline feature is exactly the one
+that did not survive.
+
+**TE `pos_rank` is the result to be suspicious of, per this plan's own instruction.**
+It was pre-committed that anything clearing alpha on the second look deserves *more*
+scrutiny, and this cleared from p=0.541. The tell is not the p-value, it is the
+coefficient: it **doubled**. Pure power gain tightens the standard error and leaves the
+estimate roughly where it was — which is what TE `age` did (SE 0.333, coef ×0.86, a
+textbook power story). `pos_rank` tightened its SE (0.930 → 0.575) *and* doubled, which
+says the 2017–2020 classes carry a stronger relationship than 2021–2025 rather than
+merely a better-measured one.
+
+It is stable across all nine folds (−0.683 to −1.228) and it ships. But **the
+"optimistic ceiling" caveat in `rookie_backtest`'s docstring is now load-bearing** in a
+way it was not when written: the historical feature is a week-1 depth chart, taken
+after final cuts, while the live model reads an August one taken before them. TE's
+primary feature is the one most exposed to that gap, so live TE rookie projections
+should be expected to be more confident than they deserve. **First candidate to cut if
+Phase 13 CP2's holdout disagrees.**
+
+**Visible cost of the refit:** Jeremiyah Love was 8th on the 12-team board under the
+five-class model and is out of the top 10 under the nine-class one. Same player, same
+data, different training window. That is the honest size of the uncertainty here and it
+should temper how hard any rookie is drafted off this board.
+
+**QB: 35 rows against `MIN_ROWS_TO_FIT = 40`.** Predicted before the run and unchanged.
+Roughly four rookie quarterbacks per class clear `MIN_GAMES`; nine classes does not fix
+it and neither will more seasons. QB needs a different idea or the flat baseline.
+
+**One message bug**, no numbers affected: the coverage line printed "above 0.35" as
+static text regardless of the actual spread, so it claimed `pos_rank` would be dropped
+while the guard was correctly keeping it. The guard was right and its narration was
+wrong — now conditional.
+
+### First run of the 32-team board — three bugs (Aug 6)
+
+The board built. Two crashes and one wrong number, and the wrong number is the one
+worth reading.
+
+**1. `load_depth_charts()` returns two different schemas.** Historical seasons come
+back as `club_code` / `week` / `depth_team`; the live 2026 pull comes back as `team` /
+`dt` / `pos_rank` / `pos_abb`. nflverse rebuilt the historical charts from a different
+source than the live scrape, so this is permanent, not version skew.
+`rookies.get_latest_depth_chart()` only ever sees the live shape, which is why the
+project never hit it until Phase 12 asked for history. `week_one_depth_chart()` now
+handles both; `rookies.py` was deliberately left alone rather than speculatively
+rewritten against a shape it does not see.
+
+Silver lining: the historical shape carries `week`, which is a *better* answer to leak
+#2 than `dt`. `dt` is a scrape timestamp that could land anywhere in the preseason;
+week 1 is a dated, pre-outcome moment.
+
+**2. `round` reads back from CSV as a string** whenever the column contains nulls
+(undrafted rookies). It still grouped correctly, so this surfaced three lines later at
+a format specifier rather than anywhere near the cause.
+
+**3. QB replacement level came out at QB63.** There are 32 starting quarterbacks in the
+NFL. QB63 is a third-stringer projecting near zero, which handed every real
+quarterback a VOR roughly equal to his whole projection and put Josh Allen 3rd overall
+— a superflex board should raise QBs, but not by pricing them against nobody.
+
+The cause was the ADP shortfall rule, and it is a real modelling error rather than a
+typo. The FFC feed covers 184 of this league's 320 skill picks, and the old rule scaled
+every position's count by `skill_picks/observed` — 1.74× — which asserts that the
+position mix of the covered draft continues unchanged through the 42% that isn't
+covered. **QB and TE draw from a finite startable pool; RB and WR do not.** Rounds 8–10
+of any draft are running back and receiver dart throws. Nobody takes a 40th
+quarterback. Scaling QB at the same rate as WR says otherwise.
+
+Now extrapolated using the position mix of the **deepest covered picks**
+(`TAIL_WINDOW = 40`) instead of the mix of the whole feed. If quarterbacks have stopped
+going by the time the feed runs out, the tail says so and the extrapolation stops adding
+them — no invented parameter, no hand-set cap, still drafter behaviour, just read at
+the point that describes the picks being estimated. Past
+`EXTRAPOLATION_WARN_SHARE = 0.25` the run states plainly what fraction of the draft is
+estimated rather than observed.
+
+**This changes nothing on the existing boards.** Both have feed coverage well past their
+pick count (201 against 168 and 84), so neither ever enters the branch. The rule was
+only ever exercised by a league big enough to outrun the feed, and the first such league
+is the one that exposed it.
+
+**Still outstanding on this board:** replacement level rests on 40 observed picks and an
+assumption. Set an `expected_drafted` block from real results as soon as there are any.
 
 ### Phase 13 — Full refit, validation, final boards (Aug 17–20)
 

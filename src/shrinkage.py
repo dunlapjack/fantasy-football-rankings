@@ -323,6 +323,7 @@ def run_sweep(df, anchor, k_values=None, alpha=ALPHA, form="james_stein"):
         low = score(predicted.filter(low_confidence))
 
         if k == 0:
+            delta, se, moved = 0.0, 0.0, 0
             delta_text, se_text, moved_text = "--", "--", "--"
         else:
             delta, se, moved = paired_delta(
@@ -340,8 +341,14 @@ def run_sweep(df, anchor, k_values=None, alpha=ALPHA, form="james_stein"):
         print(f"   {k:>4}{overall['mae']:>10.4f}{low['mae']:>10.4f}{overall['rho']:>9.4f}"
               f"{delta_text:>20}{se_text:>8}{moved_text:>9}   {trend}")
 
+        # The paired statistics are what the decision rule is actually
+        # read against, so they belong in the file the charts are drawn
+        # from. Printing them and dropping them meant any chart built
+        # later would have to re-derive them and could disagree.
         results.append({"k": k, "anchor": anchor, "form": form, **overall,
-                        "mae_low": low["mae"], "n_low": low["n"]})
+                        "mae_low": low["mae"], "n_low": low["n"],
+                        "paired_dmae_low": delta, "paired_se_low": se,
+                        "n_moved": moved})
 
     return results, predictions
 

@@ -5,6 +5,7 @@ import polars as pl
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEIGHTS_PATH = PROJECT_ROOT / "data" / "situational_weights.json"
+ROOKIE_WEIGHTS_PATH = PROJECT_ROOT / "data" / "rookie_weights.json"
 
 # ---------------------------------------------------------------------
 # LEGACY (Phase 6) -- kept for reference, no longer the live source.
@@ -63,6 +64,75 @@ def load_situational_weights(path=WEIGHTS_PATH):
         return json.load(f)["positions"]
 
 
+def load_rookie_weights(path=ROOKIE_WEIGHTS_PATH):
+    """
+    Phase 12. Loads the rookie weights written by
+    src/fit_rookie_weights.py, keeping only the positions whose fit met
+    the bar.
+
+    THE FILTER IS THE POINT. fit_rookie_weights records
+    `fit_is_trustworthy` per position -- something cleared alpha AND
+    nothing flipped sign across the five leave-one-class-out folds --
+    and this function silently drops the rest. A position that fails
+    falls back to the flat cohort baseline, which is exactly what it had
+    before Phase 12, so failure costs nothing and shipping a fragile
+    coefficient would.
+
+    Returns {} if the file is absent, which is the correct behaviour on
+    a clone that has not run the rookie fit: rookies take no adjustment,
+    same as Phase 11.
+    """
+    if not path.exists():
+        return {}
+
+    with open(path) as f:
+        payload = json.load(f)
+
+    positions = payload.get("positions", {})
+    trusted = {p: s for p, s in positions.items() if s.get("fit_is_trustworthy")}
+
+    rejected = sorted(set(positions) - set(trusted))
+    if rejected:
+        print(f"Rookie weights: {rejected} did not meet the stability bar -- "
+              f"those positions keep the flat cohort baseline.")
+    if trusted:
+        print(f"Rookie weights active at: {sorted(trusted)}")
+
+    return trusted
+
+
+def _position_adjustment(spec):
+    """
+    Builds the `intercept + sum(feature x weight)` expression for one
+    position, with mean-imputation and centering applied in that order.
+
+    Shared by the veteran and rookie paths because the arithmetic is
+    identical and the ways it goes wrong are the ways this project has
+    already gone wrong twice -- a coefficient separated from its
+    intercept (Phase 6) or from its center (nearly, Phase 10). One
+    implementation means one place for that to be right.
+
+    Order matters: fill first, then center. Filling with the raw mean
+    and then centering yields exactly 0 -- "no opinion" -- which is the
+    intended fallback for a missing value.
+    """
+    expression = pl.lit(float(spec["intercept"]))
+    feature_means = spec.get("feature_means", {})
+    centers = spec.get("centers", {})
+
+    for feature, weight in spec["weights"].items():
+        # Booleans arrive from CSV as true/false strings or as bools
+        # depending on the read path; cast through Float64 so either
+        # works and the arithmetic below is well-defined.
+        value = pl.col(feature).cast(pl.Float64)
+        value = value.fill_null(feature_means.get(feature, 0.0))
+        if feature in centers:
+            value = value - float(centers[feature])
+        expression = expression + value * weight
+
+    return expression
+
+
 def apply_situational_weights(player_features, weights_by_position=None):
     """
     Adds `adjusted_fantasy_points_per_game` on top of the pure
@@ -98,15 +168,22 @@ def apply_situational_weights(player_features, weights_by_position=None):
     remembering that the long-standing "nothing works for QB" result was
     partly a statement about sample size, not only about quarterbacks.
 
-    Rookies (`is_rookie`) still take no adjustment. Every weight was
-    estimated from veteran deltas against a player's OWN history, and a
-    rookie's baseline is a cohort projection, not personal history, so
-    these coefficients were never validated on that population. It also
-    sidesteps data artifacts that only appear for rookies: `team_changed`
-    compares this season's team to last season's roster, which a rookie
-    was never on, so it reads "changed" for nearly every rookie
-    regardless of situation. Phase 12 replaces this with a rookie-specific
-    model fit on the 2021-25 classes.
+    Rookies (`is_rookie`) never take a VETERAN adjustment, and that has
+    not changed. Every weight above was estimated from veteran deltas
+    against a player's OWN history; a rookie's baseline is a cohort
+    projection, so these coefficients were never validated on that
+    population. It also sidesteps artifacts that only appear for rookies
+    -- `team_changed` compares this season's team to last season's
+    roster, which a rookie was never on, so it reads "changed" for
+    essentially every rookie regardless of situation.
+
+    PHASE 12 changed what they get INSTEAD. Rookies now take the rookie
+    model from data/rookie_weights.json -- fitted on the 2021-25 classes
+    against a leave-one-class-out cohort baseline, using only features
+    knowable before a player takes a snap. Positions whose fit failed
+    the stability bar, and a missing weights file, both fall back to a
+    zero adjustment, which is exactly the Phase 11 behaviour. So this
+    can only ever add information; it cannot silently remove any.
     """
     if weights_by_position is None:
         weights_by_position = load_situational_weights()
@@ -123,47 +200,44 @@ def apply_situational_weights(player_features, weights_by_position=None):
         else "fantasy_points_per_game"
     )
 
+    # Centered features were fitted as deviations from the position
+    # mean, so _position_adjustment() shifts them by the SAME center
+    # before multiplying. Applying a centered age coefficient to a raw
+    # age is wrong by coef x center -- about -9.5 PPG at RB, which would
+    # dwarf every real adjustment in the model. That is the Phase 6
+    # intercept bug in a different costume, which is why the center ships
+    # inside the same JSON object as the weight rather than living as a
+    # constant in this file.
     adjustment = pl.lit(0.0)
-
     for position, spec in weights_by_position.items():
-        position_adjustment = pl.lit(float(spec["intercept"]))
-        feature_means = spec.get("feature_means", {})
-        centers = spec.get("centers", {})
-
-        for feature, weight in spec["weights"].items():
-            # Booleans arrive from CSV as true/false strings or as bools
-            # depending on the read path; cast through Float64 so either
-            # works and the arithmetic below is well-defined.
-            value = pl.col(feature).cast(pl.Float64)
-
-            fill_value = feature_means.get(feature, 0.0)
-            value = value.fill_null(fill_value)
-
-            # Centered features were fitted as deviations from the
-            # position mean, so they must be shifted by the SAME center
-            # before the coefficient means anything. Applying a centered
-            # age coefficient to a raw age is wrong by coef x center --
-            # about -9.5 PPG for RB, which would dwarf every real
-            # adjustment in the model. This is the Phase 6 intercept bug
-            # in a different costume, which is why the center ships
-            # inside the same JSON object as the weight rather than
-            # living as a constant anywhere in this file.
-            #
-            # Order matters: fill first, then center. Filling with the
-            # raw mean and then centering yields exactly 0 -- "no
-            # opinion" -- which is the intended fallback.
-            if feature in centers:
-                value = value - float(centers[feature])
-
-            position_adjustment = position_adjustment + value * weight
-
         adjustment = (
             pl.when(pl.col("position") == position)
-            .then(position_adjustment)
+            .then(_position_adjustment(spec))
             .otherwise(adjustment)
         )
 
-    adjustment = pl.when(pl.col("is_rookie")).then(0.0).otherwise(adjustment)
+    # PHASE 12. Rookies leave the veteran path entirely and take the
+    # rookie model instead -- a different fit, on a different population,
+    # against a different baseline. A position with no trusted rookie fit
+    # falls through to 0.0, which is the pre-Phase-12 behaviour.
+    #
+    # The `is_rookie` branch is evaluated LAST and unconditionally, so a
+    # rookie can never pick up a veteran coefficient by accident even if
+    # he happens to carry a non-null value in a veteran-only feature.
+    rookie_weights = load_rookie_weights()
+    rookie_adjustment = pl.lit(0.0)
+    for position, spec in rookie_weights.items():
+        rookie_adjustment = (
+            pl.when(pl.col("position") == position)
+            .then(_position_adjustment(spec))
+            .otherwise(rookie_adjustment)
+        )
+
+    adjustment = (
+        pl.when(pl.col("is_rookie"))
+        .then(rookie_adjustment)
+        .otherwise(adjustment)
+    )
 
     return player_features.with_columns([
         (pl.col(baseline_column) + adjustment).alias(

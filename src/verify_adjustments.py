@@ -288,11 +288,42 @@ def check_live_board(check, positions):
         f"({100 * adj_high / raw_high:.0f}% retained)" if raw_high else "",
     )
 
+    # WAS "rookies take no situational adjustment" AND WENT STALE THE DAY
+    # PHASE 12 SHIPPED (fixed Aug 6).
+    #
+    # That assertion was correct from Phase 5 to Phase 11 and became false
+    # the moment rookie_weights.json existed, because the whole point of
+    # Phase 12 is that rookies now DO take an adjustment -- a different
+    # one, from a different model. The check kept passing on the positions
+    # with no rookie fit and hard-FAILED on the one that had it, printing
+    # "Do not build a board from this" about a board that was working
+    # correctly.
+    #
+    # Worse than a false alarm: build_board does not read this file, so
+    # the boards built anyway. A gate that says stop while the thing it
+    # guards goes ahead teaches you to ignore it, and an ignored check is
+    # worse than no check.
+    #
+    # The real invariant is not "rookies get zero." It is "rookies never
+    # get a VETERAN adjustment" -- the two models must stay separate. A
+    # rookie at a position with no trusted rookie fit must be exactly
+    # zero; a rookie at a fitted position may be non-zero, and
+    # verify_rookies is what checks that number is right.
     rookies = df.filter(pl.col("is_rookie"))
     if rookies.height:
+        from src.ranking import load_rookie_weights  # noqa: PLC0415
+
+        fitted = set(load_rookie_weights())
+        unfitted = rookies.filter(~pl.col("position").is_in(list(fitted)))
+        worst = (
+            float(unfitted.select(pl.col("situational_adjustment").abs().max()).item())
+            if unfitted.height else 0.0
+        )
         check.hard(
-            float(rookies.select(pl.col("situational_adjustment").abs().max()).item()) == 0.0,
-            "rookies take no situational adjustment",
+            worst == 0.0,
+            f"rookies outside the rookie model take no adjustment "
+            f"(fitted: {sorted(fitted) or 'none'})",
+            f"worst non-zero {worst:+.4f}" if worst else "",
         )
 
 
@@ -481,14 +512,16 @@ def check_replacement_levels(check):
     from src.build_board import (  # noqa: PLC0415
         MODELED_POSITIONS, apply_injury_overrides, compute_draft_targets,
         compute_replacement_ranks, compute_starter_ranks, compute_vor, load_config,
+        rescore_for_league, select_adp_variant,
     )
 
     configs = {
-        "Lebron James (12)": PROJECT_ROOT / "league_config.json",
+        "Lebron James (12)": PROJECT_ROOT / "league_config_lebronjames.json",
         "Dunlap Family (6)": PROJECT_ROOT / "league_config_dunlap.json",
+        "32-Team Superflex": PROJECT_ROOT / "league_config_32team.json",
     }
     if not all(path.exists() for path in configs.values()):
-        check.soft(False, "both league configs present")
+        check.soft(False, "all league configs present")
         return
 
     # WHAT THIS COUNTS, AND WHY IT CHANGED (Aug 4)
@@ -513,11 +546,38 @@ def check_replacement_levels(check):
     top_n = 30
     position_counts = {}
     best_rank = {}
+    replacement_by_label = {}
+    starters_by_label = {}
     for label, path in configs.items():
         config = load_config(path)
         players = pl.read_csv(PLAYER_FEATURES_PATH).filter(
             pl.col("position").is_in(MODELED_POSITIONS)
         )
+
+        # THIS CHECK WAS MEASURING A BOARD THAT DOES NOT EXIST (Aug 6).
+        #
+        # build_board applies two league-specific transforms before it
+        # touches a PPG or an ADP column -- select_adp_variant() and
+        # rescore_for_league() -- and this loop skipped both. For the two
+        # original leagues that was harmless: they read the default 'ppr'
+        # feed and the base scoring, so skipping the transforms changed
+        # nothing.
+        #
+        # The 32-team league is neither. It reads the '2qb' feed and 4-point
+        # passing TDs, so this check was reporting replacement QB53 off a
+        # 202-pick 'ppr' feed while the actual board used QB43 off a
+        # 184-pick '2qb' one -- and comparing quarterbacks scored 2-3 PPG
+        # too high, which is most of why its top-30 showed 14 of them.
+        #
+        # It PASSED, on numbers belonging to no board anyone would draft
+        # from. That is the more dangerous kind of wrong: the same shape as
+        # the rookie check fixed above, where a verification drifted from
+        # the thing it verifies and kept reporting confidently. Any check
+        # that reimplements part of the shipping path has to call the
+        # shipping path.
+        players = select_adp_variant(players, config)
+        players = rescore_for_league(players, config)
+
         for column in ["has_adp", "is_rookie", "recent_major_injury"]:
             players = players.with_columns(
                 pl.col(column).cast(pl.String).str.to_lowercase().eq("true").alias(column)
@@ -527,6 +587,23 @@ def check_replacement_levels(check):
         ranks = compute_replacement_ranks(config, players)
         starters = compute_starter_ranks(config)
         print(f"\n   {label}: drafted {ranks}  (starter-slot rule was {starters})")
+
+        # Captured per league, because `players` is a loop variable and
+        # anything reading it after the loop gets whichever league went
+        # LAST -- transformed to that league's ADP feed and scoring.
+        #
+        # This is not hypothetical. The superflex check below was written
+        # to recompute replacement ranks itself and did exactly that: it
+        # reported the 12-team league at QB36, off the 32-team frame,
+        # while the loop three lines above printed QB22 for the same
+        # league. It still PASSED, on a number belonging to no league.
+        #
+        # Third instance of one bug today -- a check deriving its own copy
+        # of something the shipping path already computed. Storing the
+        # loop's own results removes the opportunity rather than
+        # relitigating the rule.
+        replacement_by_label[label] = ranks
+        starters_by_label[label] = starters
 
         board = compute_draft_targets(compute_vor(players, ranks), config["num_teams"])
         top = board.head(top_n)
@@ -539,7 +616,14 @@ def check_replacement_levels(check):
         counts = {p: position_counts[p][label] for p in MODELED_POSITIONS}
         print(f"   top-{top_n} mix: {counts}")
 
-    deep, shallow = list(configs.keys())
+    # Named explicitly rather than unpacked positionally (Aug 6). This was
+    # `deep, shallow = list(configs.keys())`, which is correct for exactly
+    # two configs and raises ValueError on the third. Adding a league
+    # should not break a check about the other two.
+    deep = "Lebron James (12)"
+    shallow = "Dunlap Family (6)"
+    superflex = "32-Team Superflex"
+
     for position in ("QB", "TE"):
         check.hard(
             position_counts[position][shallow] <= position_counts[position][deep],
@@ -556,6 +640,56 @@ def check_replacement_levels(check):
             f"best {position}: rank {best_rank[position][deep]} deep, "
             f"{best_rank[position][shallow]} shallow",
         )
+
+    # THE SUPERFLEX DIRECTION (Aug 6). The two original leagues both start
+    # one quarterback, so every QB check above only ever asked whether a
+    # SHALLOWER league discounts the position. Superflex is the first
+    # config that pushes the other way, and it is the only check that can
+    # catch a SUPERFLEX slot being silently ignored -- if compute_starter_
+    # ranks() dropped the superflex share tomorrow, QB starters would fall
+    # to zero, replacement would land at QB1, and nothing else in this file
+    # would notice.
+    #
+    # Deliberately a soft check. The QB count in the top 30 is downstream
+    # of the non-superflex ADP feed documented in build_board, so it is
+    # measuring the model AND a known-biased input at the same time. A hard
+    # assertion on it would fail for a reason that is already written down.
+    # REWRITTEN (Aug 6). This asked whether superflex puts MORE
+    # quarterbacks in the top 30, and once the check finally read the
+    # right ADP feed and the right scoring, the answer became "no" -- 1
+    # against 1. It then passed trivially and measured nothing.
+    #
+    # The 14-to-1 drop is not a bug and the investigation is worth
+    # keeping: at 4-point passing touchdowns an elite QB loses ~3 PPG,
+    # and quarterbacks have high floors, so even QB43 still scores ~12
+    # PPG where WR140 scores ~5. VOR is a DISTANCE above replacement, and
+    # at QB that distance is compressed no matter how many go off the
+    # board. Superflex genuinely does not lift quarterbacks much in a
+    # 4-point league -- conventional superflex advice assumes 6.
+    #
+    # So the top-30 count was never the right instrument. What it was
+    # built to catch is a SUPERFLEX slot being silently ignored, and that
+    # shows up in replacement DEPTH, which is upstream of scoring and of
+    # VOR compression. If compute_starter_ranks ever stopped reading the
+    # slot, QB starters would fall to zero and replacement would collapse
+    # toward QB1. This asserts it does not.
+    superflex_ranks = replacement_by_label[superflex]
+    deep_ranks = replacement_by_label[deep]
+    superflex_floor = starters_by_label[superflex]
+
+    check.hard(
+        superflex_ranks["QB"] > deep_ranks["QB"],
+        "superflex drafts deeper at QB than the 1-QB league",
+        f"QB{superflex_ranks['QB']} superflex vs QB{deep_ranks['QB']} 12-team",
+    )
+    check.hard(
+        superflex_ranks["QB"] >= superflex_floor["QB"],
+        "superflex QB replacement respects its own starter floor",
+        f"QB{superflex_ranks['QB']} drafted vs floor QB{superflex_floor['QB']}",
+    )
+    print(f"\n   superflex QB replacement: QB{superflex_ranks['QB']} "
+          f"(12-team QB{deep_ranks['QB']}) -- the slot is honoured in DEPTH; "
+          f"4-pt passing TDs are why it does not show in the top {top_n}.")
 
 
 def main():

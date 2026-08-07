@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.team_codes import normalize_team_column
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config.json"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config_lebronjames.json"
 
 RECENCY_WEIGHTS = [0.5, 0.3, 0.2]  # most-recent-first; applies to any 3-year window
 OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
@@ -34,7 +34,7 @@ OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
 # Worth recording that this REVERSES the verdict reached a few hours
 # earlier, and why. That run scored a silently-corrupted five-season
 # training set (see the DEFAULT_TARGET_SEASONS incident in
-# PHASE_8_PLAN.md) where the same scheme measured +0.0702 ± 0.0378 = 1.86
+# PHASE_8-14_PLAN.md) where the same scheme measured +0.0702 ± 0.0378 = 1.86
 # SE and went negative at RB. The point estimate barely moved -- 0.070 to
 # 0.062 -- while the standard error fell from 0.0378 to 0.0289. That is
 # what more data is supposed to do to a real effect, and it is the reason

@@ -2750,3 +2750,84 @@ because nobody looked.
 `MODEL_VERSION` 14 → 15. Every rookie's Exp Gm changes under the logit — undrafted QBs
 most of all, 0.0% → 4.1%. Rank still does not move, and `--expect rank-identical` against
 v14 is the check.
+
+---
+
+## Carried forward: QB is the least-modelled position on the board (Aug 12)
+
+Found while reading the v15 sanity output. Four of the seven names on the 32-team board's
+fade list are quarterbacks, and **all four have empty driver strings.** Nothing fires
+because there is nothing to fire.
+
+**QB has no situational weights.** `fit_weights.FEATURE_SPECS` covers RB, WR and TE only.
+Phase 13 CP2's holdout cut age, which was Phase 10's headline finding and QB's only
+feature, and no replacement was ever found.
+
+**QB also has no baseline shrinkage.** `SHRINKAGE_EXCLUDED_POSITIONS = {"QB"}`, and that
+exclusion is correct for the reason already recorded beside it: shrinkage moved 59% of
+quarterbacks UP, because for a backup QB a small sample is not a noisy estimate of the same
+quantity, it is a precise estimate of a different one. Verified on the live table —
+`fantasy_points_per_game` and `fantasy_points_per_game_shrunk` are identical for every QB
+and differ by up to 4.97 for RBs.
+
+So a quarterback's `adjusted_fantasy_points_per_game` is his own recency-weighted trailing
+average, with thin seasons discounted, and **nothing else.** No population anchor, no
+situational adjustment. He is the only position modelled purely from his own history.
+
+### What that does, measured
+
+Board rank minus market ADP, across the 36 quarterbacks on the 32-team board that carry an
+ADP:
+
+| experience | mean board-vs-market gap | n |
+|---|---|---|
+| ≤ 1 yr | **−41.1** | 6 |
+| 2–3 yr | −21.8 | 7 |
+| 4–6 yr | −21.4 | 8 |
+| 7+ yr | −17.3 | 15 |
+
+`corr(games in sample, gap) = +0.34`. The board fades every quarterback relative to the
+market, and it fades the young ones roughly two and a half times harder.
+
+**The mechanism is not over-shrinkage — it is the absence of a development curve.** A
+second-year quarterback's trailing average is largely his rookie season, which is
+systematically depressed. The market prices in improvement. The model has no term that
+can, because the term that would have — age — was cut by the holdout for failing out of
+sample at QB specifically.
+
+### Why it matters most exactly where it is worst
+
+In the 32-team superflex, **18 of the top 60 are quarterbacks.** The position that
+determines the board's shape is simultaneously:
+
+- the least-modelled position on it,
+- the one whose replacement level rests on a single autodrafted mock (QB59), and
+- the one whose ranks sit on the cliff that assumption straddles.
+
+On the 12-team and 6-team boards QB is 7 and 4 of the top 60, so the exposure is small.
+This is a 32-team superflex problem.
+
+### Candidates, if this is picked up
+
+Ordered by how likely they are to survive a gate, most likely first:
+
+1. **Re-run the QB feature bake-off with the current candidate set.** QB was dropped after
+   `age` failed; the RB/WR/TE features were never tested at QB against the nine-fold gate.
+   `pass_att_pg` and `team_changed` in particular have plausible QB mechanisms and already
+   ship in `player_features.csv`. Cheapest possible test, no new data.
+2. **A starter/backup split before anything else is fitted.** The shrinkage comment already
+   establishes that QBs are two populations, not one, and that treating them as one broke a
+   different mechanism. Every QB model since has still been fitted on the pooled set.
+3. **An experience or games-played term** aimed directly at the measured pattern above.
+   Fits the evidence, but it is a curve fitted to a gap against ADP, which is a market
+   quantity — close to fitting the model to the market, and it should be tested against
+   actual outcomes rather than against the gap that motivated it.
+
+### Also carried: the rookie cohort tie
+
+Jeremiyah Love and Jadarian Price hold identical `Adj PPG` of 15.12 and sit at ranks 23 and
+24, separated only by the ADP tiebreak. The market separates them by 26 picks. Rookie
+baselines are one value per position × round bucket, so two first-round backs are the same
+player to this model. `pick` is already a candidate in `fit_rookie_weights` and did not
+clear alpha for RB or WR; only TE/age ships. Worth re-testing now that Phase 13.5 has shown
+`pick` carries real signal on the availability side.

@@ -134,3 +134,36 @@ every QB scenario are the ones the board is actually confident about.
 Absent `playing_time.json` is allowed — that is a v13 board, which is wrong about rookie
 Exp Pts but was what shipped for months and affects no rank. Absent is a known state;
 stale is a lie.
+
+---
+
+## The pre-draft refresh (repeat before each draft)
+
+Injuries and ADP move; the model does not need refitting for either. This is a data
+refresh, so `MODEL_VERSION` stays where it is.
+
+```bash
+# 1. Hand-edit injury_overrides.csv first. The pipeline never touches it.
+#    OUT_SEASON and PUP/NFI change numbers; QUESTIONABLE is a note only.
+#    An unmatched name RAISES, which is what you want. A missing name is
+#    silent, and leaves an injured player looking like a bargain.
+
+python -m src.pipeline
+
+python -m src.build_board --config league_config_dunlap.json      --version 15 --note "pre-draft refresh"
+python -m src.build_board --config league_config_lebronjames.json --version 15 --note "pre-draft refresh"
+
+# 2. Read what the refresh actually did, draftable range only.
+python -m src.compare_boards <previous>.xlsx 2026_6Team_Board_v15.xlsx --focus 200
+
+# 3. Mechanical screen, then read the top 60 yourself.
+python -m src.sanity_top_n --top 60
+```
+
+Two things to watch in step 2:
+
+- **Large moves with `dPPG` near zero are sort-order effects, not revaluations.** Check the
+  GAINED/LOST ADP flag. `has_adp` gates above VOR, so a player entering the FFC feed vaults
+  over the entire no-ADP block without the model changing its mind about him.
+- **The top-60 position mix.** If the QB count shifts on the 32-team board, ADP has moved
+  `expected_drafted` and you are near the QB49/50 cliff — re-read `QB59_stress_test.xlsx`.

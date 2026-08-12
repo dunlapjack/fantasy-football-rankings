@@ -1919,3 +1919,834 @@ different rebuilds with no way to tell them apart.
   decision rather than an omission.
 - No holdout validation has ever been run. Phase 13 CP2 is the first. Every R² quoted
   so far is in-sample.
+
+---
+
+## Phase 13.5 — playing time, and the QB59 stress test (Aug 12)
+
+Two pieces of work, one of them a detour that turned out to matter more than the thing
+it was detouring from. Both were prompted by the same question — *is the number of
+running backs near the top of the 32-team board statistically sound?* — and the answer
+to that question is **yes, and it is the least fragile thing on the board.**
+
+### The RB question, answered three ways
+
+**1. Does the historical RB curve actually fall off?** Yes, and consistently. Ranking
+every player by *actual* season PPG within his own position and season, over
+2017–2025 (`backtest_features.csv`, players with ≥8 games):
+
+| decline in actual PPG | RB | WR | TE |
+|---|---|---|---|
+| rank 12 → 36 | **6.30** | 4.42 | 5.08 |
+| rank 18 → 48 | **6.83** | 5.18 | 4.60 |
+| rank 24 → 60 | **7.58** | 5.69 | 4.66 |
+
+RB declines faster than WR **in nine seasons out of nine** on the 12→36 measure, and the
+gap is widening rather than shrinking — +1.30 in 2017, +3.63 in 2024, +3.23 in 2025.
+This is not a one-cycle artifact and it is not a modelling choice; it is what the
+position did.
+
+**2. Is WR depth real?** Yes. Mean actual PPG at WR48 is 9.38 against 6.37 at RB48. The
+receiver curve is genuinely flatter, which is the other half of the same finding and the
+reason the board is comfortable letting receivers wait.
+
+**3. Is the count an artifact of replacement level?** No, and this is the part worth
+recording. The 32-team board puts **20 RB, 20 WR, 18 QB, 2 TE** in its top 60. Moving RB
+replacement ten ranks in either direction changes that mix by **zero players**; moving it
+twenty ranks changes it by **one**. RB replacement sits on a dead-flat plateau — 34
+players tied at 4.63 Adj PPG, seven of them inside the top 92 — so the RB VOR level is
+insensitive to exactly where the bar is put.
+
+That plateau is worth naming as a separate caveat even though it does not affect the
+count: **RB VOR magnitudes between roughly RB40 and RB90 are not meaningfully ordered.**
+They are differences against a floor made of identically-valued unknowns. The top-60
+conclusion survives it; a "who is the better RB63" conclusion would not.
+
+### The weights check
+
+Independent verification, not a re-run of the project's own scripts:
+
+- **Shipped weights are applied exactly.** Recomputed `Sit Adj` from
+  `data/situational_weights.json` for all 316 modelled veterans on the 32-team board,
+  applying intercepts and centres by hand. **Max |difference| = 0** (float noise, ~2e-15).
+  The fit and the board agree.
+- `expected_drafted` sums to 352 = 32 × 11, and `compute_replacement_ranks` raises if it
+  does not.
+- No sign flips and no magnitude instability in leave-one-season-out for any
+  position/feature.
+- Every coefficient p < 0.05 except `RB/trend_missing` (0.051) and `TE/trend_missing`
+  (0.68). Both are missingness indicators paired to an imputed feature; keeping them is
+  correct — dropping the indicator while keeping the imputed variable is what would bias.
+- Holdout gate passed, all feature gains positive except `veteran/TE/trend_missing` at
+  −0.0026, which is noise.
+
+**Nothing in the weights needs to change before a draft.**
+
+### The QB59 stress test — the real fragility
+
+The board's most load-bearing assumption is not RB. It is `expected_drafted.QB = 59`,
+recorded from **one** 32-team mock in which **31 of 32 teams autodrafted**. Sweeping QB
+from 45 to 70, redistributing the difference across RB/WR/TE by observed share so the
+total stays at 352:
+
+| QB drafted | QB in top 60 | RB in top 60 | QB in round 1 | QB1 overall |
+|---|---|---|---|---|
+| 45 | 7 | 25 | 1 | 8 |
+| **49** | **8** | 24 | 1 | 8 |
+| **50** | **13** | 24 | 3 | 8 |
+| 55 | 18 | 20 | 6 | 6 |
+| **59 (shipped)** | **18** | **20** | **7** | **5** |
+| 65 | 19 | 20 | 12 | 3 |
+| 70 | 21 | 20 | 15 | 1 |
+
+**The board is bimodal and the cliff is between QB49 and QB50.** Below it, eight
+quarterbacks make the top 60; above QB55, eighteen do. One mock draft's count is being
+asked to locate the board on one side of a step change.
+
+Two things follow, and they point in opposite directions:
+
+- **Reassuring:** the shipped value sits on the *stable* side. QB55, 59 and 62 produce
+  effectively the same board. The estimate would have to be wrong by ten in one specific
+  direction to matter.
+- **Not reassuring:** the sampling error on a count of 59 out of 352 picks is roughly
+  ±7 at one standard error, and positional runs make draft picks positively correlated
+  rather than independent, so the true band is wider than that. **It straddles the
+  cliff.** And the model's own ADP-tail extrapolation — the thing the mock replaced —
+  said 47, which is on the far side.
+
+**Where the volatility lives.** Non-QB players move at most 14–26 ranks across the whole
+sweep. Elite quarterbacks barely move either: Josh Allen is top-8 in every scenario. The
+entire instability is concentrated in the **QB6–QB16 tier**, which swings 46–83 ranks:
+Drake Maye 19↔65, Joe Burrow 20↔70, Justin Herbert 25↔81, Kyler Murray 36↔101.
+
+**Draft-day rule, and it is a live read rather than a pre-commitment.** Draft off the
+*worst-case* rank in `QB59_stress_test.xlsx` and you cannot be wrong by more than the
+swing. **46 players are top-60 under every scenario from QB45 to QB70 — 20 RB, 17 WR,
+7 QB, 2 TE.** Note that RB is 20 in the robust list and 20 on the shipped board: the
+running back count is the one number the QB assumption cannot touch. Then watch rounds
+1–2. If quarterbacks go fast, QB59 is right and the middle-QB tier is a genuine value
+band. If quarterbacks are still sitting at pick 60, replacement is shallower than
+modelled and that tier is forty ranks worse than the board says.
+
+Artifacts: `QB59_stress_test.xlsx` (robust board sorted by worst-case rank, plus the full
+scenario grid), `boards_v13_frozen/` (v13 boards and weights preserved so the 32-team
+draft can run off them regardless of what follows).
+
+### Phase 13.5a — the playing-time model
+
+Phase 13's closing note asked the right question and deferred it: *"what is
+P(earns a role) for a rookie versus a veteran, and does the board price the
+difference."* It does not. Here is the size of the hole, measured against files already
+in `data/`:
+
+| | rows | P(≥8 games) |
+|---|---|---|
+| `rookie_backtest_features.csv` | 415 | **100.0%** |
+| `backtest_features.csv` | 4177 | **66.4%** |
+
+**Zero percent of the rookie training sample failed the availability test. Thirty-four
+percent of the veteran sample did.** The two baselines the board sets against each other
+are not the same kind of number, and the whole difference runs in the rookies' favour.
+
+The chain that produces this is three filters deep, and the last one is documented while
+the first two are not:
+
+    drafted                                    load_rookie_class()
+      → appears on a week-1 roster snapshot    inner join to team
+      → recorded a stat line that season       inner join to outcomes  (600 survive)
+      → played ≥ 8 games                       MIN_GAMES filter        (415 survive)
+
+`rookie_backtest.py`'s own comment says the surviving sample "is a sample of rookies who
+were given a chance — and the intercept is a statement about THEM, not about all
+rookies." Correct, and left unquantified. `src/playing_time.py` quantifies it.
+
+**What the module does.** Rebuilds the universe with both inner joins loosened, so a
+rookie who never dressed is a row with `actual_games_played = 0` rather than an absence.
+Then three outputs:
+
+1. **Availability rates** — P(snap), P(≥8 games), E[games] per position × round bucket,
+   leave-one-class-out, with cells under n=15 falling back to the position rate and
+   saying so.
+2. **A realisation ratio** — E[season points | drafted] ÷ (season length × E[PPG | ≥8
+   games]). 1.00 would mean no hole; every point below is the board's rookie premium,
+   priced.
+3. **A fitted `expected_games`** on draft capital, feeding
+   `expected_games_missed` — the column PUP/NFI already populates — so availability turns
+   into Exp Pts in exactly one place.
+
+**Two design commitments, both deliberate.**
+
+*Availability does not touch the rate.* `compute_expected_points` states the rule — PPG
+is a rate, a player who misses games is not worse per game, and folding availability into
+the rate corrupts the quantity everything is fitted to predict. Not relaxed here. The
+consequence is honest and worth stating: **this alone will not move a rookie's rank.**
+It moves Exp Pts.
+
+*The feature set is short on purpose.* `pick` and `position` are the only things every
+drafted rookie has. Every richer feature in `rookie_backtest_features.csv` — landing
+spot, position competition, depth chart, O-line — exists **only for players who made a
+roster**. Conditioning availability on them would re-introduce, one level down, exactly
+the survivorship this module removes.
+
+**The rank-moving question is separate, and it is a diagnostic first.**
+`--sweep` rebuilds the leave-one-class-out cohort baseline at MIN_GAMES ∈ {0,1,2,4,6,8,
+10,12}. A baseline that slides smoothly across that grid means 8 is as defensible as 6
+and the population is simply changing. A baseline that **steps** means the threshold is
+choosing the projection. Whichever it is, **nothing ships on the strength of that table** —
+it is evidence for the holdout, per Phase 13 CP2.
+
+**Status: written, not yet run.** The module needs `nflreadpy` and network access, so it
+runs on Jack's machine, not in the analysis sandbox. Every number in this section that is
+*not* about `playing_time.py`'s own output was computed directly and is checkable.
+
+### Phase 13.5b — combine data
+
+Not started. It hooks into `fit_expected_games`, and that is not an arbitrary choice:
+combine measurables exist for every drafted player **regardless of whether he ever
+played**, which makes them one of the few feature families admissible against an
+availability target. That property is why the two halves of Phase 13.5 were scoped
+together in the first place.
+
+### Carried forward
+
+- **`expected_drafted.QB = 59` rests on one autodrafted mock and the board is bimodal
+  around it.** A second mock — ideally a human room — is the single highest-value data
+  collection available to this project. One more draft's counts would halve the
+  uncertainty on the number the whole QB tier depends on.
+- **RB replacement sits on a 34-player plateau.** Harmless for the top-60 conclusion,
+  fatal for any conclusion about a specific back between RB40 and RB90.
+
+### Phase 13.5a — FIRST RUN (Aug 12). The sweep steps, and the module had a bug.
+
+**The universe is bigger than the plan assumed.** 719 drafted offensive rookies
+2017–2025: 600 took a snap (83.4%), **415 reached 8 games (57.7%)**, 119 never played
+(16.6%). So the shipped rookie projection is estimated on 58% of the population and
+applied to 100% of it.
+
+*Lower bound, not a measurement.* The universe is drafted players with a non-null
+nflverse `gsis_id`. A drafted player who never signed may have no id at all. 719 over
+nine classes is ~80/class against ~90 expected, so roughly ten players a year are still
+missing — and every one of them is a true zero. The 16.6% is the floor.
+
+#### The sweep steps, and it steps exactly where the theory predicts
+
+Correlation between a cell's P(≥8 games) and the size of its baseline step from
+threshold 0 to 8: **−0.81** across all twelve cells.
+
+*(Recomputed after the MIN_CELL_N fix: **−0.88**. The −0.81 above was measured on the first
+run, whose RB and TE Round 1 cells were contaminated by the position-mean fallback. The
+chart script recomputes from disk and is the authority; this line is left in place because
+the correction is the point.)*
+
+| cell | P(≥8gm) | baseline 0 → 8 | step | realisation |
+|---|---|---|---|---|
+| QB Day 3 | 7.4% | 7.97 → 15.64 | **+96%** | **0.07** |
+| QB Day 2 | 33.3% | 9.31 → 12.34 | +33% | 0.30 |
+| TE Day 3 | 40.5% | 3.97 → 5.00 | +26% | 0.34 |
+| RB Day 3 | 55.6% | 4.28 → 5.30 | +24% | 0.47 |
+| WR Day 3 | 46.6% | 3.48 → 4.17 | +20% | 0.41 |
+| WR Round 1 | 89.7% | 10.15 → 10.83 | +7% | 0.82 |
+| RB Round 1 | ~high | 14.92 → 14.92 | **0%** | — |
+
+Round 1 does not move at all — nearly every first-rounder plays, so the filter has no one
+to remove. **Day-3 quarterback nearly doubles**, because 92.6% of them are removed and
+the survivors are Brock Purdy. The board currently projects every Day-3 rookie QB at
+15.64 PPG. Its realisation ratio is **0.07** — it is paying roughly fourteen times what
+that player is worth.
+
+**The argument this settles.** `MIN_GAMES = 8` on the veteran side is applied to the
+*baseline* — prior seasons, to stabilise a rate before predicting anything. On the rookie
+side the identical constant is applied to the *outcome*. Those are not the same operation
+with the same justification. The second is conditioning on the dependent variable, and it
+has been hiding behind the fact that both are spelled `8`.
+
+#### The bug: the first run got Round 1 backwards
+
+`MIN_CELL_N` was 15 with a fallback to the position-wide rate. Round-1 RB (~1.5/class)
+and Round-1 TE (~1.2/class) both fell under the bar after leave-one-class-out, and both
+silently borrowed their whole position:
+
+    RB Round 1   P(>=8gm) 62.6%   E[games]  9.41   source=position
+    RB Day 2     P(>=8gm) 74.4%   E[games] 11.36   source=cell
+
+**A first-round running back rated less available than a second-rounder**, and the same
+inversion at TE (53.1% against Day 2's 65.0%). The realisation table printed the tell in
+plain sight — `RB Round 1  n=168`, larger than the entire Day 3 cell — and the sweep had
+been saying it all along: RB Round 1's baseline is 14.92 at *every* threshold from 0 to
+12, which can only happen if essentially every first-round back plays twelve games.
+
+This is the same failure class as the three `compute_replacement_ranks` bugs of Aug 6:
+**a number computed on a different population than its label claims.** Three fixes:
+
+1. `MIN_CELL_N` 15 → 8. These are means; a mean over twelve first-round backs is thin, but
+   a mean over 168 backs of all rounds is a mean of the wrong thing.
+2. Availability falls back to the **fitted pick model**, which is monotone in draft
+   position by construction and therefore *cannot* produce "round 1 is worse than round
+   2." Realisation ratios substitute nothing at all — a thin cell reports its own number,
+   its own n, and `thin: true`.
+3. **A monotonicity assertion**, with a 10-point tolerance so sampling noise in a
+   twelve-player cell warns rather than halts. Checked against the first run's numbers it
+   raises on RB (+11.5%) and TE (+10.4%) and passes QB (−20.6%) and WR (−9.2%) — it
+   catches exactly the two contaminated cells and neither clean one.
+
+Also dropped threshold 1 from the sweep: it printed identical to 0 in all twelve cells,
+necessarily, because the sweep operates on snap-takers.
+
+#### Does the decomposition close?
+
+Keeping PPG a rate and putting availability in `expected_games` is only legitimate if the
+product lands near the truth. It cannot land exactly — E[games × ppg] ≠ E[games] ×
+E[ppg | played] whenever the two correlate, and they obviously do. Measured over all
+twelve cells on a 14-game season, the product recovers a **median 0.89** of actual rookie
+production, range 0.82–1.03. Biased low by ~11%, one-directional, roughly constant across
+cells. Against a status quo that overstates Day-3 QB by 14×, that is an acceptable trade
+in the safe direction, and it is now recomputed every run rather than remembered.
+
+#### What this actually does to the 2026 boards — very little, and that is the finding
+
+| | rookies in draftable range | Exp Pts multiplier (median) | **rank-moving rate multiplier** |
+|---|---|---|---|
+| 12-team (top 192) | 15 | 0.78 | **0.94** (min 0.81) |
+| 32-team (top 352) | 30 | 0.69 | **0.94** (min 0.75) |
+
+**No rookie inside either board's top 80 moves more than 6% on rate.** Every rookie in
+the 32-team top 120 is a first-rounder, and first-round rates barely move (RB 14.92 →
+14.92, TE 9.10 → 9.10, WR 10.83 → 10.15). The corrections concentrate at rank 164+ and
+184+ — Carson Beck 0.75, Jonah Coleman 0.81, Cyrus Allen 0.83.
+
+**So the availability hole is real, large, and almost entirely outside the range where
+this year's decisions get made.** The 32-team board happens to contain no Day-3 rookie
+quarterbacks, which is luck rather than design — the 0.07 cell is a live landmine in any
+year where one is draftable.
+
+The Exp Pts column is a different story: first-round rookies should be marked down
+15–22% there, and that column is currently telling Jeremiyah Love and Jadarian Price they
+will play all fourteen games.
+
+**Open: six rookies on the 32-team board have no round or pick** (undrafted, floored to
+round 7 by `rookies.py`). They inherit Day-3 rates, which carry the largest corrections,
+and they were not in this analysis because they have no draft capital to fit on.
+
+#### Status
+
+Module fixed but **not re-run**, and nothing is wired into a board. Next: re-run
+`python -m src.playing_time` and confirm the monotonicity assertion passes, then
+`python -m src.holdout --gate`. The rate change (MIN_GAMES 8 → 0) is the only piece that
+can move a rank and it is the only piece that must clear the gate; the `expected_games`
+change touches Exp Pts alone and is safe by construction.
+
+### Phase 13.5a — SECOND RUN (Aug 12). Clean, and the fix moved the right numbers.
+
+The monotonicity assertion passed silently and every cell now reads `source=cell` — with
+`MIN_CELL_N` at 8, Round-1 RB (n=12) and Round-1 TE (n=10) clear the bar on their own and
+the fitted-model fallback was never needed. What it corrected:
+
+| cell | first run (contaminated) | second run (own cell) |
+|---|---|---|
+| RB Round 1 | P(≥8gm) 62.6%, E[gm] 9.41, **realisation 0.54** | P(≥8gm) **92.3%**, E[gm] **13.23**, **realisation 0.79** |
+| TE Round 1 | P(≥8gm) 53.1%, E[gm] 8.07, **realisation 0.46** | P(≥8gm) **100.0%**, E[gm] **14.91**, **realisation 0.91** |
+
+Availability is now monotone in draft capital at all four positions — QB 68.9/32.7/12.1,
+RB 77.8/66.8/49.2, TE 87.7/57.8/36.6, WR 81.3/72.1/40.3. **First-round tight ends played
+in 100% of cases and cleared 8 games in 100% of cases**, n=10 across nine classes.
+Realisation 0.91 says the board is barely overpaying for them at all.
+
+The decomposition check independently reproduced the hand-computed **0.89**, this time
+over 108 cell-seasons rather than 12 hand-worked cells.
+
+### The Aug 12 `holdout --gate` run passed, and it did not test any of this
+
+`holdout.MODELS` has two entries, `veteran` and `rookie`. The gate ran the veteran model
+(RB/WR/TE) and the rookie TE model, and passed both. **Neither knows `playing_time.py`
+exists.** That run is evidence v13 still holds up. It is not evidence about Phase 13.5,
+and reading it as a green light is the exact failure mode `run_gate`'s docstring now warns
+about.
+
+Phase 13.5 gets **its own gate**, in `playing_time.py`, writing to
+`data/playing_time_gate.json` — deliberately not `holdout_gate.json`, because two gates
+sharing a file means whichever ran last silently claims to be the state of both.
+
+It cannot reuse `holdout.py` and the reason is structural: that gate asks "does this
+FEATURE earn its slot," by ablation against a fitted model. Phase 13.5 asks "which
+POPULATION should the baseline be estimated on, and should it be multiplied by an
+availability term." There is no feature to ablate. Forcing it through the ablation
+machinery would mean inventing a feature that is really a population choice, which is how
+you get a passing gate that tested nothing.
+
+**The test.** Leave one rookie class out; predict every drafted rookie in it — the full
+population, zeros included, because that is the population the board applies these numbers
+to. Score on **season total points**, not PPG: total points is what a roster spot returns,
+and a player with no games has no PPG to score against but unambiguously scored zero.
+
+Four predictors, a 2×2, so the rate change and the availability change each justify
+themselves rather than shipping as a bundle:
+
+    A  rate@8 x season length        <- what ships today
+    B  rate@8 x fitted availability
+    C  rate@0 x season length
+    D  rate@0 x fitted availability  <- the proposal
+
+**Rule, fixed before the numbers are seen:** D must beat A or the phase ships nothing.
+B and C are each compared to A to say which half did the work; a change that does not beat
+A on its own does not ship on its own.
+
+    python -m src.playing_time --gate
+
+### The eight "HURTS out of sample" flags are all noise, and the display should say so
+
+The gate output flagged eight feature-folds as hurting. Every one is inside a quarter of
+one standard error of zero. SE on a single fold's RMSE is `RMSE / sqrt(2n)`, which for
+these fold sizes is **0.18 to 0.31**:
+
+| flag | delta | in SE |
+|---|---|---|
+| TE workload_share 2025 | −0.0517 | **−0.25** |
+| RB workload_share 2025 | −0.0438 | −0.17 |
+| TE age 2024 | −0.0263 | −0.13 |
+| WR recent_major_injury 2025 | −0.0191 | −0.11 |
+| TE trend_missing 2023 | −0.0105 | −0.05 |
+| TE position_competition_ppg 2023 | −0.0099 | −0.05 |
+| RB pos_rank 2025 | −0.0034 | −0.01 |
+| RB trend_missing 2025 | −0.0003 | −0.00 |
+
+The flag fires on the **sign** of a quantity whose noise floor is ~0.2, and sign is the
+one thing that cannot be read at that resolution. This is the same error the plan already
+recorded for `MEANINGFUL_GAIN = 0.02` on Aug 7 — "the threshold was borrowed... −0.057 is
+a quarter of one standard error" — reappearing in the ablation display rather than in a
+threshold. The gate's own pooled rule is right and the per-fold arrow is what should
+change: print the SE beside the delta, or suppress the arrow below 1 SE.
+
+**One thing in that table is not noise.** `RB workload_share` ranges −0.044 (2025) to
++0.355 (2023), a spread of **1.46 SE** — the largest in the set, and it is the RB model's
+largest coefficient (−6.69). `WR age` spreads 1.08 SE, `RB pos_rank` 0.73. Set against
+the plan's own Aug 7 finding that the gate's three seasons were *the three best folds* for
+`continuity_score`, `workload_share` at RB is the feature most worth running
+`--gate-seasons all` against before the next refit. It may be a real post-2022 change in
+how backs are used; it may be 2023 doing all the work. Both are consistent with three
+folds and only nine can tell them apart.
+
+### Carried forward, updated
+
+- Run `python -m src.playing_time --gate`. Nothing ships until D beats A.
+- Run `python -m src.holdout --gate --gate-seasons all` on RB `workload_share` before the
+  next refit.
+- The per-fold `HURTS` arrow needs an SE beside it or a 1-SE suppression threshold.
+
+### Phase 13.5 GATE (Aug 12) — passed, and it refuted half the proposal
+
+719 held-out drafted rookies, leave-one-class-out, scored on season total points against
+the full drafted population:
+
+| predictor | RMSE | vs A | mean bias |
+|---|---|---|---|
+| **A** rate@8 × full season *(shipped today)* | 102.01 | — | **+62.21** |
+| **B** rate@8 × availability | 59.41 | +42.60 | **+1.30** |
+| **C** rate@0 × full season | 76.43 | +25.58 | +39.72 |
+| **D** rate@0 × availability *(the proposal)* | 59.33 | +42.68 | −6.29 |
+
+D beats A, so the gate passes. **But D beats B by 0.08 RMSE, which is 0.05 of one
+standard error** (1 SE = 1.57 at n=719), while moving the mean bias from +1.30 — 0.6 SE
+from zero, i.e. unbiased — to −6.29, which is 2.8 SE from zero and biased low.
+
+    availability alone captures        99.8% of the total available improvement
+    the rate change on top of it       0.2%
+
+**The stated rule was incomplete and the result showed where.** It asked whether each half
+beat A. It did not ask whether the second half added anything *on top of* the first, and
+that is the comparison that decided the phase. The incremental test is now part of
+`run_gate` so nobody has to rediscover it.
+
+**Why, and the project predicted it in writing.** From `compute_expected_points`, written
+months before this module existed: folding availability into the rate "would silently
+double-count the moment a future phase models availability directly." That is precisely
+what rate@0 does. Lowering the games threshold pulls the rate down *because the players it
+admits played fewer games* — it is an availability correction wearing a rate's clothing.
+Multiply it by an explicit availability term and the same correction is applied twice. The
+−6.29 is that double-count, measured.
+
+**The shipping decision is B, not D.**
+
+- `rookie_backtest.MIN_GAMES` **stays at 8** and is not touched.
+- No cohort baseline changes. `adjusted_fantasy_points_per_game` is untouched.
+- **No player's rank moves anywhere on any board.** Exp Pts only.
+- The MIN_GAMES sweep remains a correct diagnostic of a real selection effect. It just
+  turns out that effect is fully absorbed by the availability term and does not want a
+  second correction.
+
+The design commitment made at the top of `playing_time.py` — availability goes in
+`expected_games`, never in the rate — held. The one place it was doubted mid-phase is the
+one place the gate said no.
+
+**In plain units: the board has been overpaying the average drafted rookie by 62 points
+per season. B removes essentially all of it and leaves a residual bias of +1.3.**
+
+### Wired in
+
+`build_board.prepare_board_frame` now calls `expected_games_for_rookies` between
+`apply_injury_overrides` and `compute_expected_points` — after the column exists, before
+its only consumer reads it. A rookie who is also on PUP takes the larger of the two
+absences, never their sum, because the fitted number already averages over rookies who got
+hurt.
+
+Two implementation notes worth keeping:
+
+- **Undrafted rookies get a pick, not a position mean.** Six rookies on the 32-team board
+  have no round or pick. The first draft fell back to a position-wide availability, which
+  is the same substitution that caused the round-1 inversion — a UDFA is not an average
+  rookie, he is a worse-than-day-3 rookie. `rookies.py` already floors UDFAs to round 7,
+  so this floors them to pick 245 and runs them through the same fitted curve. One rule for
+  everybody. It extrapolates slightly past the fit's support, which is acknowledged: it
+  touches Exp Pts for six undraftable players and cannot move a rank.
+- **`src.rookie_backtest` is imported lazily.** It pulls `nflreadpy`, a network-backed
+  data client, and `build_board` needs only two functions from this module that use `json`,
+  `polars` and arithmetic. A module-level import would put a data client into the import
+  graph of every board build and every `sanity_top_n` run — so a broken nflreadpy could
+  stop a draft board rendering over a dependency it never uses. The board-side surface of
+  `playing_time.py` is dependency-free by construction; the analysis side pays where it uses.
+
+### Where Phase 13.5 stands
+
+- 13.5a **done and shipped.** Rebuild boards to pick it up; ranks will be identical to v13
+  and Exp Pts will drop for rookies. That identity is the check — if a rank moves, something
+  is wired wrong.
+- 13.5b (combine data) not started. It hooks into `fit_expected_games`, and the gate result
+  raises its value rather than lowering it: availability is now the *only* live rookie
+  lever, so anything that predicts availability better is the whole game.
+- Still open: `--gate-seasons all` on RB `workload_share`; the per-fold `HURTS` arrow needs
+  an SE beside it; a second 32-team mock for `expected_drafted.QB`.
+
+### v14 build (Aug 12) — passed the rank check, and the rank check was not the interesting output
+
+All three boards: **0 of 1088 ranks moved, VOR and Adj PPG unchanged**, 231 players'
+Exp Gm and Exp Pts changed. Phase 13.5 is wired correctly and does exactly what it claimed.
+
+Two bugs surfaced anyway, and neither was the thing being tested.
+
+**1. `pick` is a string, and the build died on the first rookie.** `player_features.csv`
+is a CSV, so every column round-trips as text — which is why `prepare_board_frame` already
+has a loop casting `has_adp` / `is_rookie` / `recent_major_injury` back to booleans a few
+lines above the new hook. `pick` needed the same and did not get it:
+`unsupported operand type(s) for -: 'str' and 'float'`.
+
+The fix removed the mechanism as well as the symptom. The original used
+`pl.struct(...).map_elements()` — a Python UDF, which accepts whatever the column holds and
+finds out at runtime. It is now a native polars expression, so a bad dtype fails at cast
+time with the column named. `--selftest` was added at the same time: a synthetic frame,
+five seconds, no nflverse, built to be nasty in the ways the real frame is.
+
+Worth stating plainly: **every expensive check had passed.** The gate validated the
+availability arithmetic across 719 held-out rookies and nine classes. What broke the build
+was a type conversion, and nothing cheap stood between the two.
+
+**2. The linear probability model goes negative inside its own training support.**
+
+The board printed Exp Gm 0 and Exp Pts 0 for eleven undrafted rookie quarterbacks — the
+value it reserves for OUT_SEASON. Cause:
+
+| position | slope /pick | share = 0 at pick | share @245 |
+|---|---|---|---|
+| **QB** | −0.002785 | **230** | **0.000** |
+| TE | −0.003111 | 278 | 0.104 |
+| WR | −0.002479 | 349 | 0.257 |
+| RB | −0.002105 | 402 | 0.331 |
+
+**The QB curve crosses zero at pick 230, which is inside the draft.** `UDFA_EFFECTIVE_PICK
+= 245` therefore produced a negative fitted share, clipped to zero. "This man will not play
+a single snap" is an assertion the data does not support — the worst QB cell actually
+*measured* is Day 3 at 12.1%.
+
+And the scale was wrong in my head: **152 of 232 rookies have no pick**, not the six I
+counted when I only looked at the top of the 32-team board. A tail case that is two thirds
+of the population is not a tail case.
+
+**Fix: stop extrapolating, start inheriting.** A UDFA is floored to round 7 for his cohort
+baseline in `rookies.py`, so he now inherits the round-7 (Day 3) *observed availability*
+too — one convention in both places, and a measurement rather than a line extended past
+where it means anything. Separately, every fitted share is floored at its position's worst
+observed cell, so a genuinely drafted pick-250 QB cannot fit below zero either.
+
+**This is a patch over a misspecification, and it should be named as one.** The right fix
+is to fit availability on a logit scale, where the functional form cannot leave [0, 1].
+That belongs in **13.5b** alongside the combine features — not in a hotfix hours before a
+draft. Carried forward.
+
+**3. The comparator lied about rookies.** It checked `Rook` for a value starting with "Y";
+the board writes `"R"`. So it reported "0 of them rookies" against a build that had printed
+"232 rookies marked down on Exp Pts" two lines earlier. Any non-empty marker counts now.
+Small, but a verification tool that misreports is worse than no verification tool, and this
+one was two lines from a contradiction it could have caught itself.
+
+**New invariant in `--selftest`:** no rookie may ever be assigned zero expected games. It
+is checked separately from the expected-value table on purpose — someone "fixing" a
+failing test by editing the expectations would not catch it, and Exp Gm 0 is a claim no
+availability model is entitled to make about a healthy player.
+
+**v14 verified clean (Aug 12, build #2).** Selftest passes all eight rows. All three boards:
+0 of 1088 ranks moved, VOR and Adj PPG unchanged, 231 rookies' Exp Gm and Exp Pts changed.
+Undrafted quarterbacks now read Exp Gm 1.69 and Exp Pts 12.5 rather than 0 and 0.
+
+**The 232-vs-231 gap resolved, and it is not an error.** The build reported 232 rookies
+marked down; the comparator found 231 rows changed. The difference is **Chris Brazzell II**,
+a rookie WR (round 3, pick 83) marked OUT_SEASON. His `expected_games_missed` is non-zero,
+so he counted in the build's tally — but `compute_expected_points` zeroes an out-for-season
+player regardless of availability, so his Exp Gm was already 0 in v13 and stayed 0.
+
+The build's count now excludes out-for-season rookies. These two numbers exist to
+cross-check each other, and a count that cannot be reconciled against the comparator is
+worse than no count. They should agree exactly from here.
+
+### v14 shipped (Aug 12) — data refresh read, and the QB cliff was not touched
+
+**The headline for the imminent draft: the top-60 position mix is IDENTICAL.**
+QB 18, RB 20, WR 20, TE 2, before and after six days of ADP movement. The board did not
+move off the stable side of the QB49/QB50 cliff, and `expected_drafted` still reads the
+observed mock counts. The RB conclusion holds unchanged.
+
+**How much really moved.** The raw count says 878 of 1082, which is nearly meaningless:
+
+| range | moved at all | moved 10+ | moved 25+ |
+|---|---|---|---|
+| top 120 | — | **1** | — |
+| top 352 (draftable) | 218 | 10 | 10 |
+
+208 of the 218 draftable-range moves are ±3 place shuffles caused by 5 players entering
+and 6 leaving the pool. **One player inside the top 120 moved by ten or more.**
+
+**And five of the ten big movers are not revaluations at all.**
+`compute_draft_targets` sorts by `(out_for_season, has_adp, vor, adp, player_name)`, so
+`has_adp` is a hard gate **above** VOR — gaining ADP coverage vaults a player over the
+entire no-ADP block regardless of what the model thinks of him.
+
+| player | move | dPPG | cause |
+|---|---|---|---|
+| Stefon Diggs | 188 → 91 | −0.24 | **gained ADP** |
+| Brian Robinson | 245 → 173 | 0.00 | **gained ADP** |
+| De'Zhaun Stribling | 226 → 163 | 0.00 | **gained ADP** |
+| Chimere Dike | 214 → 160 | 0.00 | **gained ADP** |
+| Oronde Gadsden II | 146 → 207 | 0.00 | **lost ADP** |
+
+Four of these have a projection change of *exactly zero*. The model did not revalue anyone;
+the FFC feed added three names and dropped one. Coverage went 185 → 188.
+
+**The actionable one is Gadsden.** The model still rates him at 8.64 PPG — which is where
+rank 146 came from — and he fell 61 places purely because the market stopped listing him.
+If he is going to be drafted in a real room, the board is now under-ranking him by design.
+That design is defensible ("if the market has no opinion, the model's opinion alone isn't
+worth a pick") but it is a rule about markets, not about football, and it should be
+overridden by hand when you know better.
+
+**Comparator improvements, both forced by this run.** `--focus` (default 200) confines the
+rank report to the draftable range; the first version led with Owen Wright +481, a rank
+589 → 1070 move nobody will ever act on, while burying the fact that only one top-120
+player moved. And rank moves now carry `dPPG` and a GAINED/LOST ADP marker, so a
+sort-order effect can never again be read as a revaluation.
+
+**Also verified:** rookie Adj PPG is unchanged for all 232 (cohort baselines don't move on
+a veteran data refresh), 225 rookies took the availability markdown, and undrafted QBs read
+Exp Gm 1.69 rather than 0.
+
+---
+
+## Phase 13.5b — the logit refit (Aug 12)
+
+Sequenced first, ahead of the combine features, because adding predictors to a
+misspecified functional form means the same failure persists and no feature test is
+trustworthy against a broken baseline.
+
+### The evidence
+
+Leave-one-class-out predictive **binomial deviance**, 2017–2025, with a 500-resample
+bootstrap over players:
+
+| pos | linear | logit | gain | 95% CI | P(logit better) |
+|---|---|---|---|---|---|
+| **QB** | 1195.6 | 707.6 | **+488.0** | [+63, +823] | **99.0%** |
+| RB | 1657.5 | 1653.9 | +3.5 | [−6, +20] | 74.0% |
+| WR | 2123.9 | 2122.9 | +1.0 | [−19, +27] | 51.8% |
+| **TE** | 864.7 | 887.3 | **−22.7** | [−43, +3] | **3.2%** |
+
+Read honestly: **the logit repairs quarterback, is a coin flip at RB and WR, and is
+genuinely worse at tight end.** TE's −22.7 is not noise — the bootstrap puts it at 96.8%
+confidence that the linear form fits TE better.
+
+The linear predictions were clipped to [1e-6, 1−1e-6] before scoring. Unclipped, its
+negative fitted values give infinite deviance. The clip is a courtesy to the incumbent and
+the QB gap above is therefore a **lower bound**.
+
+### It ships for all four positions anyway, and not because of fit
+
+- **Admissibility beats deviance.** A model that can output a negative probability is
+  wrong whatever it scores. TE's linear form crosses zero at pick 278 — outside a 262-pick
+  draft, but by sixteen picks, and that margin is the only thing between it and the QB bug.
+- **Keeping linear for TE means keeping the floor patch for TE.** One form removes a class
+  of failure; two forms retain it in one corner and add a per-position exception to defend.
+- **The portfolio is overwhelmingly positive.** TE gives up 0.17 deviance per observation;
+  QB gains 4.69.
+
+The cost is real and is recorded rather than rounded away. If TE ever earns features of its
+own, this is the first thing to re-test.
+
+### What the refit removed
+
+- `CLIP_TO_OBSERVED_FLOOR` — retired. A logistic curve cannot reach 0 or 1 for any finite
+  input, so there is nothing left to clamp. The guarantee now lives in the functional form
+  instead of in a constant somebody has to remember to keep correct.
+- `_ridge_fit` and `_clip01` — deleted under the delete-dead-things rule. Leaving a fitter
+  on disk that nothing ships is how it gets re-adopted by autocomplete in six weeks.
+
+The UDFA inheritance stays. It was never about the functional form — a pickless rookie has
+no `pick` to feed any curve, and inheriting the measured Day 3 share is a missing-data rule.
+
+### A comment that was confidently wrong, corrected
+
+`ALPHA = 0.10` was documented in `playing_time.py` as a "ridge penalty… the project's one
+regularisation constant." It is neither. `fit_weights.fit_position` calls plain
+`sm.OLS(...).fit()` and uses ALPHA as a **p-value cutoff** in its two-stage keep/drop —
+there is no ridge anywhere in this project. The number was right and the sentence
+explaining it was invented.
+
+Recorded rather than quietly deleted. A confident wrong comment is worse than no comment,
+and the only defence against the next one is noticing this one.
+
+### Selftest strengthened
+
+The synthetic fixture is now on the logit scale, and the PUP row was inverted: the fitted
+absence (7.17 games) now **exceeds** the PUP absence (4.0), so `max()` is exercised from
+the opposite side. Under the old fixture a `sum()` bug would have passed; now it returns
+11.17 and fails. The pick-250 QB — the exact input that returned a negative probability
+under the linear model — returns 3.2%.
+
+### Still to do in 13.5b
+
+- Combine measurables. Join is **not** on `gsis_id`: the nflverse combine table carries
+  `pfr_id` and `cfb_id` only, so it has to bridge through `load_draft_picks`. And combine
+  data covers **invitees only**, which is non-random missingness that needs its own
+  indicator alongside — the same treatment `depth_chart_missing` and `trend_missing`
+  already get.
+- Rookie-usage tendency at **draft team** and at **playcaller**, tested separately. Must key
+  off draft team, never the week-1 roster snapshot, or it reintroduces the survivorship
+  this entire phase exists to remove. Playcaller cells will be thin (~6 drafted skill
+  rookies each) — thinner than the round-1 cells that already broke once.
+
+### The logit re-gated (Aug 12) — it improved the shipping predictor
+
+|  | linear | logit |
+|---|---|---|
+| **B** rate@8 × availability | RMSE 59.41, bias +1.30 | **RMSE 58.92, bias +1.09** |
+| **D** rate@0 × availability | RMSE 59.33, bias −6.29 | RMSE 59.17, bias −6.29 |
+| **D over B** | +0.08 (+0.05 SE) | **−0.25 (−0.16 SE)** |
+
+The refit improved the predictor that actually ships, on both RMSE and bias. And the
+SHIP B conclusion **strengthened**: under the linear form the rate change was merely
+worthless (+0.05 SE); under the logit it is actively negative (−0.16 SE). Two functional
+forms now agree that availability is the whole effect and the rate change double-counts.
+
+Fitted tails are sane at last — QB pick 245 reads 4.1% rather than 0.0%, TE 13.5%. Every
+slope is significant past any threshold worth quoting (QB p=2e-81, WR p=6e-143).
+
+### Usage tendency — screened out BEFORE building it
+
+Permutation test, 2000 shuffles of the team label, on the standard deviation of team mean
+availability:
+
+| | observed sd | p |
+|---|---|---|
+| raw `available_share` | 9.70% | **0.018** |
+| after removing draft capital | 6.84% | **0.153** |
+| playcaller, same residual | 8.53% | 0.136 |
+
+**The raw team effect is real and it is draft capital wearing a franchise's name.** Teams
+whose rookies play more are teams that draft rookies higher — and `pick` is already the
+model's only feature. Residualise availability on pick within position and no team effect
+is detectable. The playcaller cut is no better despite four times the resolution, and it
+was always going to be thin: 74 of 95 playcallers have under 12 rookies, only 45% of
+players get a usable cell.
+
+Sizing, for the record: 32 of 33 teams clear n=12 at team level (median 22 rookies each),
+so this is not a coverage failure. The cells are fine. There is just nothing in them once
+draft capital is removed.
+
+**Stated with the right strength.** p = 0.153 is not proof of absence — 32 teams × 9
+classes × ~22 players cannot see an effect smaller than roughly 3 points of share. The
+claim is *"no team effect detectable beyond draft capital at this sample size,"* which is
+a reason not to spend a gate run, not a proof that coaching staffs are interchangeable.
+
+`usage_tendency()` is kept rather than deleted — a screen is not a gate — but its docstring
+now carries this result so nothing adopts it without re-reading, and names collinearity
+with `pick` as the specific thing to check if it ever is.
+
+**This is what testing before building is for.** The feature had a plausible mechanism, a
+clean data source, sufficient cell sizes, and a real-looking raw signal. It took one
+permutation test to find that the signal was already in the model.
+
+### Combine — the remaining live candidate
+
+`src/rookie_traits.py` written, not yet run (needs nflreadpy). Three things it handles that
+are not obvious:
+
+- **The join is not on `gsis_id`.** The combine table has none; it carries `pfr_id`, so it
+  bridges combine.pfr_id → draft_picks.pfr_player_id → gsis_id. Lossy, so the match rate is
+  reported rather than assumed.
+- **Combine data is invitees only**, and invitation correlates with prospect status, which
+  correlates with the target. Each measurable is mean-imputed *within position* with its own
+  indicator, plus a `combine_missing` flag — same treatment `depth_chart_missing` already
+  gets. Pooling the `forty` mean across QB/RB/WR/TE would fabricate an implausible value
+  rather than a neutral one.
+- **`load_draft_picks` is a leak hazard.** It ships `games`, `seasons_started`, `car_av`,
+  `w_av`, `receptions` and more in the same frame as draft capital — and `games` is career
+  games played, which is very nearly the target. `DRAFT_PICK_COLUMNS` is therefore an
+  **allowlist, not a drop-list**, so a new nflverse column arrives excluded by default
+  rather than included until somebody notices.
+
+### Combine measurables — tested out of sample, rejected (Aug 12)
+
+`ht` and `wt` correlate at **0.71**, so testing them separately doubles the multiplicity
+for one underlying fact. Collapsed into `size` = mean of within-position z-scores, and run
+at **all four positions as one pre-registered feature** rather than picking the winner
+after looking. Leave-one-class-out binomial deviance, imputation means computed inside each
+training fold, 300 bootstrap resamples:
+
+| pos | n | pick only | +size | gain | 95% CI | P(gain > 0) |
+|---|---|---|---|---|---|---|
+| QB | 104 | 707.6 | 673.2 | +34.4 | [−43, +116] | 73.3% |
+| RB | 195 | 1653.9 | 1667.5 | −13.6 | [−71, +18] | 11.0% |
+| WR | 290 | 2122.9 | 2130.5 | −7.6 | [−65, +52] | 23.3% |
+| TE | 130 | 887.3 | 856.7 | +30.7 | [−54, +120] | 70.7% |
+
+**Not one interval excludes zero.** QB and TE look encouraging and are indistinguishable
+from noise at these sample sizes.
+
+The in-sample screen had said the same thing first: 5 of 31 feature × position partial
+correlations reached p < 0.05 against 1.6 expected by chance, and Benjamini-Hochberg at
+FDR 10% kept nothing. Four of the five were `ht` and `wt` at QB and TE — two correlated
+columns reporting one fact twice, which is what motivated the composite.
+
+**Two bugs found in the process, both quiet ones.**
+
+- `ht` is a **string** — `"6-2"` — despite the nflverse dictionary typing it numeric.
+  `fill_null(mean())` over a string column returns null in polars, so height was silently
+  left unimputed and would have entered the fitter as a constant: a feature that could
+  never earn its slot, looking like evidence that height does not matter. Now parsed to
+  inches, and it raises if the format changes.
+- My screening script returned deviance `0.0` when every fold was skipped, which printed
+  as `QB bench +707.6` — the largest "gain" in the table and pure artifact. QBs do not
+  bench press at the combine, so `nanmean` was NaN and every fold `continue`d. Fixed to
+  return None and fail loudly. **A missing-data path that returns a number instead of
+  nothing produces the most exciting result on the page.**
+
+### Phase 13.5b closed
+
+| | outcome |
+|---|---|
+| Logit refit | **SHIPPED.** Gate predictor B improved 59.41 → 58.92 RMSE, bias +1.30 → +1.09 |
+| Usage tendency (team + playcaller) | **REJECTED** — collinear with draft capital, p = 0.153 |
+| Combine measurables | **REJECTED** — no position's bootstrap CI excludes zero |
+
+**What the phase established: availability is draft capital.** That is now a finding
+rather than an assumption. The two feature families with a plausible mechanism and a clean
+data source were both tested and both failed; the model is short because the data is, not
+because nobody looked.
+
+`MODEL_VERSION` 14 → 15. Every rookie's Exp Gm changes under the logit — undrafted QBs
+most of all, 0.0% → 4.1%. Rank still does not move, and `--expect rank-identical` against
+v14 is the check.

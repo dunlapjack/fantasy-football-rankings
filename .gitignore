@@ -242,6 +242,18 @@ data/*
 # keeping both is being able to see, later, that they matched.
 !data/holdout_gate.json
 
+# Phase 13.5. The playing-time model and ITS OWN gate, tracked for the
+# same reasons as the three files above and paired for the same reason.
+# `build_board.require_playing_time_gate` refuses to build if the model is
+# present without a passing gate that is newer than it, so shipping one
+# without the other produces a repo that cannot build a board.
+#
+# The universe and sweep CSVs are deliberately NOT tracked: both are
+# regenerable from nflverse by `python -m src.playing_time`, and one of
+# them is 115KB of row-level data that would churn on every refresh.
+!data/playing_time.json
+!data/playing_time_gate.json
+
 # Draft boards are build artifacts now that src/build_board.py exists.
 # Binary, useless diffs, and regenerable on demand -- delete old versions
 # freely. Recover any previously committed one with:

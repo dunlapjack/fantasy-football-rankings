@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "seasons": [
+    2017,
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "n_held_out": 719,
+  "scored_on": "season total fantasy points, full drafted population",
+  "predictors": {
+    "A_rate8_full": {
+      "rmse": 102.01133324226535,
+      "gain_vs_A": 0.0,
+      "mean_bias": 62.211728382027054
+    },
+    "B_rate8_avail": {
+      "rmse": 58.92312747171403,
+      "gain_vs_A": 43.08820577055132,
+      "mean_bias": 1.0934008176956784
+    },
+    "C_rate0_full": {
+      "rmse": 76.4305984942297,
+      "gain_vs_A": 25.580734748035653,
+      "mean_bias": 39.72443478766465
+    },
+    "D_rate0_avail": {
+      "rmse": 59.172497408422046,
+      "gain_vs_A": 42.838835833843305,
+      "mean_bias": -6.290154111709639
+    },
+    "incremental_D_over_B": {
+      "rmse_gain": -0.249369936708014,
+      "se": 1.553840177870394,
+      "in_se": -0.16048622004985505,
+      "abs_bias_B": 1.0934008176956784,
+      "abs_bias_D": 6.290154111709639,
+      "ship": "B"
+    }
+  },
+  "ship": "B",
+  "rule": "D must beat A, AND the second half must add more than 1 SE on top of the first without worsening bias. B and C are reported so the rate change and the availability change each justify themselves separately.",
+  "note": "This is NOT holdout.py's gate. That one tests feature ablation on the veteran and rookie-TE models and knows nothing about playing time.",
+  "generated_utc": "2026-08-12T08:08:21.450227+00:00"
+}

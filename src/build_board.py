@@ -51,6 +51,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from src.ranking import load_situational_weights
+from src.playing_time import (
+    expected_games_for_rookies,
+    load_playing_time_model,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FEATURES_PATH = PROJECT_ROOT / "data" / "player_features.csv"
@@ -87,7 +91,21 @@ CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
 # version stayed put is the exact problem the Build History sheet was
 # added to solve, one level up: there, three rebuilds of one version; here,
 # two models under one version. Rebuild all three boards off this bump.
-MODEL_VERSION = 13
+#
+# 13 -> 14 (Aug 12), Phase 13.5. Rookie availability now feeds
+# `expected_games`, so Exp Gm and Exp Pts change on all three boards. No
+# rank moves -- the phase's gate chose availability alone and left the
+# rate untouched -- but "the numbers moved" is the bump rule and Exp Pts
+# is a number. A version that only tracked rank would be a version that
+# lies about the column this phase exists to fix.
+#
+# 14 -> 15 (Aug 12), Phase 13.5b. Availability refitted on a LOGIT scale.
+# Every rookie's Exp Gm changes, most of them slightly and undrafted
+# quarterbacks a great deal -- pick 245 reads 4.1% instead of a clamped
+# 0.0%. Same rule as the 13->14 bump: the numbers moved. Rank still does
+# not, and `compare_boards --expect rank-identical` against v14 is the
+# check.
+MODEL_VERSION = 15
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -730,6 +748,65 @@ def require_holdout_gate(skip=False):
         )
 
     print(f"Holdout gate: PASSED (folds {gate.get('seasons')})")
+    require_playing_time_gate(skip=skip)
+
+
+PLAYING_TIME_PATH = PROJECT_ROOT / "data" / "playing_time.json"
+PLAYING_TIME_GATE_PATH = PROJECT_ROOT / "data" / "playing_time_gate.json"
+
+
+def require_playing_time_gate(skip=False):
+    """
+    The same three checks, for the Phase 13.5 model.
+
+    WHY A SECOND FUNCTION RATHER THAN TWO MORE ENTRIES IN `WEIGHT_FILES`.
+    The staleness rule is "the artifact must not be newer than the gate
+    that passed it," and each model has its OWN gate. Adding
+    playing_time.json to WEIGHT_FILES would compare it against
+    holdout_gate.json -- a gate that never tested it. That is precisely
+    the "green light for the wrong model" this file already refuses to
+    accept, so it gets its own pairing rather than borrowing one.
+
+    ABSENT IS ALLOWED HERE, and that is the one real difference. A board
+    with no playing-time model is v13: rookies keep a full season of
+    expected games, which is wrong but is what shipped for months and
+    does not affect a single rank. A board with STALE or FAILED playing
+    time is a board asserting a correction it cannot support, and that
+    is blocked like any other.
+    """
+    if skip or not PLAYING_TIME_PATH.exists():
+        return
+
+    if not PLAYING_TIME_GATE_PATH.exists():
+        raise SystemExit(
+            f"\nBUILD BLOCKED: {PLAYING_TIME_PATH.name} exists but "
+            f"{PLAYING_TIME_GATE_PATH.name} does not.\n"
+            f"The rookie availability model has never been validated out of "
+            f"sample.\n\n"
+            f"Run:  python -m src.playing_time --gate\n"
+        )
+
+    if PLAYING_TIME_PATH.stat().st_mtime > PLAYING_TIME_GATE_PATH.stat().st_mtime:
+        raise SystemExit(
+            f"\nBUILD BLOCKED: {PLAYING_TIME_PATH.name} is NEWER than its gate.\n"
+            f"The playing-time model has been refitted since it was last "
+            f"validated.\n\n"
+            f"Run:  python -m src.playing_time --gate\n"
+        )
+
+    with open(PLAYING_TIME_GATE_PATH) as f:
+        pt_gate = json.load(f)
+
+    if not pt_gate.get("passed"):
+        raise SystemExit(
+            f"\nBUILD BLOCKED: the playing-time gate failed.\n"
+            f"Delete {PLAYING_TIME_PATH.name} to build without rookie "
+            f"availability, or fix the model.\n"
+        )
+
+    ship = pt_gate.get("ship", "?")
+    print(f"Playing-time gate: PASSED (ships predictor {ship}, "
+          f"n={pt_gate.get('n_held_out')})")
 
 
 def rescore_for_league(players, config, base_config_path=CONFIG_PATH):
@@ -1711,6 +1788,49 @@ def prepare_board_frame(features_path, config, quiet=False):
         )
 
     players = apply_injury_overrides(players)
+
+    # PHASE 13.5. Rookie availability, and it lands HERE on purpose --
+    # after the injury overrides have populated `expected_games_missed`,
+    # before `compute_expected_points` consumes it. One column, one
+    # consumer, and a rookie who is also on PUP takes the larger of the
+    # two absences rather than their sum.
+    #
+    # WHAT THIS DOES NOT DO. The Phase 13.5 gate compared rate@8 and
+    # rate@0 against an availability term and chose availability ALONE:
+    # rate@0 added 0.05 SE of RMSE while turning an unbiased predictor
+    # (+1.30 pts) into a biased one (-6.29). Lowering the games threshold
+    # is an availability correction wearing a rate's clothing, and
+    # applying it alongside an explicit availability term double-counts --
+    # exactly as compute_expected_points warned it would. So no cohort
+    # baseline changes, `adjusted_fantasy_points_per_game` is untouched,
+    # and NO RANK MOVES. This affects Exp Pts and nothing else.
+    playing_time = load_playing_time_model()
+    if playing_time is None:
+        if not quiet:
+            print("No data/playing_time.json -- rookies keep a full season of "
+                  "expected games. Run `python -m src.playing_time`.")
+    else:
+        players = expected_games_for_rookies(players, playing_time, config)
+        if not quiet:
+            # EXCLUDES out-for-season rookies, and the exclusion is the
+            # point. `compute_expected_points` zeroes an OUT_SEASON player
+            # regardless of what availability says, so counting him here
+            # would print 232 against a board where 231 rows actually
+            # moved -- and this number exists precisely to be checked
+            # against `compare_boards`. A count that cannot be reconciled
+            # is worse than no count.
+            #
+            # It was 232 on the first v14 build. The extra man was Chris
+            # Brazzell II, a rookie WR (rd 3, pick 83) marked OUT_SEASON,
+            # whose Exp Gm was already 0 and stayed 0.
+            adjusted = players.filter(
+                pl.col("is_rookie")
+                & (pl.col("expected_games_missed") > 0)
+                & ~pl.col("out_for_season")
+            )
+            print(f"Rookie availability: {adjusted.height} rookies marked down "
+                  f"on Exp Pts (rank unaffected by construction).")
+
     players = compute_expected_points(players, config)
 
     # How far shrinkage moved this player, for the Why column. Computed

@@ -1,129 +1,131 @@
-# Build runbook — Phase 13.5 → v14 boards
+# Build runbook
 
-Two passes. The first proves the wiring is right against a clean control; the second
-produces the boards you draft from. Doing it in this order means that if a rank looks
-wrong later, you already know it wasn't Phase 13.5.
+Two different jobs live here and they are not the same length.
 
-Run everything from the repo root with the venv active.
+- **[Before each draft](#before-each-draft)** — a data refresh. ~10 minutes. This is the
+  one that repeats.
+- **[After a model change](#after-a-model-change)** — verification. An hour, and only when
+  you have changed the model rather than the data.
 
----
-
-## Pass 0 — five seconds, no data
-
-```bash
-python -m src.playing_time --selftest
-```
-
-Checks the board-side hook against a synthetic frame built to be nasty in the ways the
-real one is: picks as strings, an undrafted rookie with an empty pick, a veteran who must
-come out at zero, a rookie already on PUP, and a position with no fitted model. Exits
-non-zero on any mismatch.
-
-This exists because the Aug 12 build died on a dtype, not on maths. Everything expensive
-had passed — the gate had validated the arithmetic on 719 players — and `pick` arrives
-from a CSV as a string, so the first rookie hit `'str' - 'float'`. Run this before any
-build; it costs nothing.
+Everything runs from the repo root with the venv active.
 
 ---
 
-## Pass 1 — verify the wiring (no data refresh)
+## Before each draft
 
-Phase 13.5 makes one precise claim: it changes `expected_games` for rookies, therefore
-Exp Gm and Exp Pts, and it moves **no player's rank**. Pass 1 executes that claim instead
-of trusting it.
+Injuries and ADP move; the model does not need refitting for either. `MODEL_VERSION` stays
+where it is — the convention in `build_board.py` is explicit that a data refresh is not a
+version bump.
 
-Builds go to `verify/` so they don't collide with the real v14 filenames.
+### 1. Update the injury file by hand
+
+`injury_overrides.csv` is the one input the pipeline never touches, and it is the one most
+likely to be stale.
+
+    OUT_SEASON     zeroes the player out. Ranking and Exp Pts both.
+    PUP / NFI      four games missed by default, or set games_missed.
+                   Touches Exp Pts only, never rank.
+    QUESTIONABLE   a note on the board. Changes no number.
+
+An unmatched name **raises**, which is the behaviour you want. A *missing* name is silent,
+and leaves an injured player sitting in the pool looking like a bargain — which is the
+failure this file exists to prevent.
+
+### 2. Refresh and rebuild
 
 ```bash
-mkdir verify
+python -m src.pipeline
 
-python -m src.build_board --config league_config_32team.json      --version 14 --output verify/32team_prerefresh.xlsx  --note "Phase 13.5 wiring check"
-python -m src.build_board --config league_config_lebronjames.json --version 14 --output verify/12team_prerefresh.xlsx  --note "Phase 13.5 wiring check"
-python -m src.build_board --config league_config_dunlap.json      --version 14 --output verify/6team_prerefresh.xlsx   --note "Phase 13.5 wiring check"
+python -m src.build_board --config league_config_32team.json      --version 15 --note "pre-draft refresh"
+python -m src.build_board --config league_config_lebronjames.json --version 15 --note "pre-draft refresh"
+python -m src.build_board --config league_config_dunlap.json      --version 15 --note "pre-draft refresh"
 ```
 
-Each build should print two gate lines before it writes anything:
+Each build must print both gate lines before it writes anything:
 
 ```
 Holdout gate: PASSED (folds [2025, 2024, 2023])
 Playing-time gate: PASSED (ships predictor B, n=719)
-Rookie availability: N rookies marked down on Exp Pts (rank unaffected by construction)
 ```
 
-Then check all three against the frozen v13:
+### 3. Regenerate the stress test — 32-team only
 
 ```bash
-python -m src.compare_boards boards_v13_frozen/2026_32Team_Board_v13.xlsx verify/32team_prerefresh.xlsx --expect rank-identical
-python -m src.compare_boards boards_v13_frozen/2026_12Team_Board_v13.xlsx verify/12team_prerefresh.xlsx --expect rank-identical
-python -m src.compare_boards boards_v13_frozen/2026_6Team_Board_v13.xlsx  verify/6team_prerefresh.xlsx  --expect rank-identical
+python -m src.qb_stress_test
 ```
 
-**What passing looks like.** Zero ranks moved, VOR and Adj PPG unchanged for all 1088
-players, and Exp Gm / Exp Pts changed for rookies only. The comparator exits 0 and says so.
+**Do not skip this after a rebuild.** `QB59_stress_test.xlsx` is computed from the board's
+Adj PPG, so a refresh silently invalidates it. A worst-case rank computed from superseded
+projections, sitting next to a current board, is worse than not having the file.
 
-**What failing means.** If a rank moved, the hook is wired wrong — most likely
-`expected_games_for_rookies` is running somewhere that feeds VOR rather than only Exp Pts.
-Do not continue to Pass 2. The comparator exits 1 and names what moved.
-
-**If the playing-time gate line says `ships predictor ?`** — the gate JSON on disk predates
-the `ship` field. Harmless, but re-run `python -m src.playing_time --gate` to get a complete
-record with the incremental test in it.
-
----
-
-## Pass 2 — refresh the data and build the real boards
-
-Your features were built Aug 6. This pulls current ADP, injury designations and depth
-charts.
+### 4. Read what the refresh did
 
 ```bash
-python -m src.pipeline
-```
-
-Then rebuild the injury overrides by hand if anything has happened since Aug 7 —
-`injury_overrides.csv` is hand-maintained and the pipeline does not touch it. An unmatched
-name raises rather than passing silently, which is the behaviour you want.
-
-```bash
-python -m src.build_board --config league_config_32team.json      --version 14 --note "Phase 13.5 + data refresh"
-python -m src.build_board --config league_config_lebronjames.json --version 14 --note "Phase 13.5 + data refresh"
-python -m src.build_board --config league_config_dunlap.json      --version 14 --note "Phase 13.5 + data refresh"
-```
-
-Version stays at 14. The convention in `build_board.py` is explicit — bump on a MODEL
-change, not a data refresh — and Pass 2 is a data refresh of the same model. That is also
-why Pass 1 wrote to `verify/`: overwriting it here is intended.
-
-Now look at what six days of data actually did:
-
-```bash
-python -m src.compare_boards boards_v13_frozen/2026_32Team_Board_v13.xlsx 2026_32Team_Board_v14.xlsx --top 60
-```
-
-Ranks **should** move here, and every move is attributable to data rather than to Phase
-13.5, because Pass 1 already established the model change moves nothing. Read the top-60
-position mix line: if the RB/WR/QB counts have shifted much, that is ADP moving
-`expected_drafted`, and it interacts with the QB59 fragility recorded in the plan.
-
----
-
-## Pass 3 — read the boards
-
-```bash
+python -m src.compare_boards <previous board>.xlsx 2026_32Team_Board_v15.xlsx --focus 200
 python -m src.sanity_top_n --top 60
 ```
 
-Mechanical checks only: duplicates, nulls, retirees, dead-feature drivers. Then read the
-top 60 of each board yourself for football reasons the script deliberately refuses to
-judge.
+Two things to watch:
 
-For the 32-team superflex board, read it alongside `QB59_stress_test.xlsx` — the
-**Worst rank** column is the one to draft off, and the 46 players that stay top-60 under
-every QB scenario are the ones the board is actually confident about.
+- **A large move with `dPPG` near zero is a sort-order effect, not a revaluation.** Check
+  the GAINED/LOST ADP flag. `compute_draft_targets` sorts by `(out_for_season, has_adp,
+  vor, ...)`, so `has_adp` gates *above* VOR — a player entering the FFC feed vaults over
+  the entire no-ADP block without the model changing its mind about him.
+- **The top-60 position mix.** If the QB count moves on the 32-team board, ADP has shifted
+  `expected_drafted` and you are near the QB49/50 cliff.
+
+`sanity_top_n` checks only mechanical things — duplicates, nulls, retirees, drivers citing
+dead features. Everything it prints under "board LIKES / FADES" is a judgement call it is
+deliberately refusing to make for you.
 
 ---
 
-## What is now guarded
+## Draft day, 32-team superflex
+
+Have both files open: `2026_32Team_Board_v15.xlsx` and `QB59_stress_test.xlsx`.
+
+**Draft off the `Worst rank` column.** 46 players are top-60 under every QB scenario from
+45 to 70 — RB 20, WR 17, QB 7, TE 2. Those are the ones the board is genuinely confident
+about.
+
+**The QB6–QB16 tier is a live read, not a pre-commitment.** Those fourteen swing 40–80
+places on the QB assumption. If quarterbacks go fast in rounds 1–2, the mock's QB59 is
+right and that tier is a real value band. If they are still sitting at pick 60, replacement
+is shallower than modelled and they are forty ranks worse than the board says.
+
+**Two places your judgement should outrank the board:**
+
+- **Quarterbacks.** QB has no situational features and no baseline shrinkage — a QB's
+  projection is his own trailing average and nothing else. The board fades young QBs by
+  ~41 picks against ADP versus ~17 for veterans, because it has no development curve. See
+  the QB section in `PHASE_8-14_PLAN.md`.
+- **Rookies who share a cohort.** Rookie baselines are one value per position × round
+  bucket, so two first-round backs can be literally the same player to this model. If you
+  have any read separating them, it is information the board does not have.
+
+---
+
+## After a model change
+
+Only when the *model* changed, not the data. The point is to prove the change did what it
+claimed and nothing else.
+
+```bash
+python -m src.playing_time --selftest     # 5 seconds, no network
+mkdir verify
+python -m src.build_board --config league_config_32team.json --version <new> --output verify/32team.xlsx --note "wiring check"
+python -m src.compare_boards <previous>.xlsx verify/32team.xlsx --expect rank-identical
+```
+
+`--expect rank-identical` exits non-zero if any rank, VOR or Adj PPG moved. Use it whenever
+a change is supposed to leave ranking alone; omit it when ranks are meant to move and you
+only want to see where.
+
+Build to `verify/` so the check does not collide with the real filenames, and run it
+*before* refreshing data — otherwise a rank change could be the model or six days of ADP
+and you will not know which.
+
+### What is guarded automatically
 
 `build_board` refuses to build if:
 
@@ -131,39 +133,23 @@ every QB scenario are the ones the board is actually confident about.
   `rookie_weights.json`
 - `playing_time.json` exists but its gate is missing, failing, or older than the model
 
-Absent `playing_time.json` is allowed — that is a v13 board, which is wrong about rookie
-Exp Pts but was what shipped for months and affects no rank. Absent is a known state;
-stale is a lie.
+Absent `playing_time.json` is allowed — that is a pre-13.5 board, wrong about rookie
+Exp Pts but rank-neutral. Absent is a known state; stale is a lie.
 
 ---
 
-## The pre-draft refresh (repeat before each draft)
+## Appendix — the Phase 13.5 verification (Aug 12, done)
 
-Injuries and ADP move; the model does not need refitting for either. This is a data
-refresh, so `MODEL_VERSION` stays where it is.
+Kept as a worked example of the pattern above, not as something to repeat.
 
-```bash
-# 1. Hand-edit injury_overrides.csv first. The pipeline never touches it.
-#    OUT_SEASON and PUP/NFI change numbers; QUESTIONABLE is a note only.
-#    An unmatched name RAISES, which is what you want. A missing name is
-#    silent, and leaves an injured player looking like a bargain.
+Passes 0–1 built all three boards to `verify/` from unrefreshed features and checked them
+against frozen v13 with `--expect rank-identical`. All three passed: 0 of 1088 ranks moved,
+231 rookies' Exp Gm and Exp Pts changed. That established Phase 13.5 was wired correctly
+*before* a data refresh could muddy the picture — so when Pass 2 moved 878 ranks, every one
+was attributable to data.
 
-python -m src.pipeline
-
-python -m src.build_board --config league_config_dunlap.json      --version 15 --note "pre-draft refresh"
-python -m src.build_board --config league_config_lebronjames.json --version 15 --note "pre-draft refresh"
-
-# 2. Read what the refresh actually did, draftable range only.
-python -m src.compare_boards <previous>.xlsx 2026_6Team_Board_v15.xlsx --focus 200
-
-# 3. Mechanical screen, then read the top 60 yourself.
-python -m src.sanity_top_n --top 60
-```
-
-Two things to watch in step 2:
-
-- **Large moves with `dPPG` near zero are sort-order effects, not revaluations.** Check the
-  GAINED/LOST ADP flag. `has_adp` gates above VOR, so a player entering the FFC feed vaults
-  over the entire no-ADP block without the model changing its mind about him.
-- **The top-60 position mix.** If the QB count shifts on the 32-team board, ADP has moved
-  `expected_drafted` and you are near the QB49/50 cliff — re-read `QB59_stress_test.xlsx`.
+Two bugs surfaced during it that the rank check was not looking for: `pick` arriving as a
+string, and eleven undrafted QBs assigned zero expected games. Both are recorded in
+`PHASE_8-14_PLAN.md`. The lesson worth keeping is that every expensive check had passed —
+the gate had validated the arithmetic on 719 held-out players — and what broke the build
+was a type conversion.

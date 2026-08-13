@@ -15,7 +15,7 @@
         "FLEX": 1,
         "K": 1,
         "DST": 1,
-        "Bench": 8
+        "Bench": 7
     },
     "scoring": {
         "pass_yard": 0.04,
@@ -28,8 +28,6 @@
         "rec_td": 6,
         "fumble_lost": -2,
         "two_point_conversion": 2,
-        "40+_yard_td_bonus": 1,
-        "50+_yard_td_bonus": 2,
         "kickoff_return_td": 6,
         "punt_return_td": 6,
         "fumble_recover_td": 6,

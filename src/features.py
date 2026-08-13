@@ -5,6 +5,7 @@ from src.scoring import load_config, calculate_offensive_points
 from pathlib import Path
 
 from src.team_codes import normalize_team_column
+from src import position_overrides
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config_lebronjames.json"
 
@@ -123,6 +124,20 @@ RAW_STAT_COLUMNS = [
 def load_veteran_stats(seasons):
     raw = nfl.load_player_stats(seasons)
     raw = raw.filter(pl.col("season_type") == "REG")
+
+    # BEFORE the position filter, which is the whole point (Phase 13.7).
+    # nflverse's position decides membership in the model's universe, so a
+    # player it miscodes is not ranked badly -- he is absent. Travis Hunter
+    # is carried as a CB and lost every receiving row here.
+    #
+    # strict=True: this is the frame where a name that matches nothing means
+    # the override silently did nothing and the player stays off the board,
+    # which is the failure the file exists to prevent.
+    raw = position_overrides.apply(
+        raw, name_column="player_display_name", strict=True,
+        label="veteran stats",
+    )
+
     raw = raw.filter(pl.col("position").is_in(OFFENSE_POSITIONS))
     raw = raw.filter(pl.col("player_id").is_not_null())
 

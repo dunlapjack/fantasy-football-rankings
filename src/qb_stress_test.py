@@ -6,8 +6,11 @@ WHY THIS EXISTS
 ---------------
 The 32-team board's replacement level comes from an `expected_drafted`
 block typed in from ONE mock draft in which 31 of 32 teams autodrafted.
-QB59 is the most load-bearing number on that board and it is a sample of
-one.
+QB59 was the most load-bearing number on that board and it was a sample
+of one. Phase 13.6 added a second mock and averaged the two, which moves
+the shipped count to QB62 -- still the same side of the cliff below, and
+still only two drafts. The sweep is why the number does not have to be
+exactly right.
 
 The board turns out to be BIMODAL in it. Sweeping 45 to 70:
 
@@ -52,11 +55,17 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BOARD = PROJECT_ROOT / "2026_32Team_Board_v15.xlsx"
-DEFAULT_OUTPUT = PROJECT_ROOT / "QB59_stress_test.xlsx"
+DEFAULT_BOARD = PROJECT_ROOT / "2026_32Team_Board_v17.xlsx"
+DEFAULT_OUTPUT = PROJECT_ROOT / "QB_stress_test.xlsx"
 
 HEADER_ROW = 7
-SHIPPED = {"QB": 59, "RB": 92, "WR": 145, "TE": 56}
+# PHASE 13.6. Was QB59/RB92/WR145/TE56 = 352, off ONE 11-round mock.
+# The league went to 12 rounds and a second mock exists, so these are now
+# the average of the two (the 11-round one put on a 12-round scale first)
+# and they sum to 384. Kept in sync with league_config_32team.json by
+# hand -- if they disagree, this file is stress-testing a board that
+# nobody shipped.
+SHIPPED = {"QB": 62, "RB": 99, "WR": 162, "TE": 61}
 SWEEP = list(range(45, 71))
 REPORTED = [45, 49, 52, 55, 59, 62, 65, 70]
 TOP = 60
@@ -154,10 +163,11 @@ def _write(table, robust, output_path, board_path):
         f"that board is rebuilt — a worst-case rank from a superseded board is "
         f"worse than none.",
         "Method: sweep expected_drafted.QB from 45 to 70, redistributing the "
-        "difference across RB/WR/TE by observed share so the total stays at 352 "
-        "skill picks. Adj PPG never changes; only replacement level, and so rank.",
+        "difference across RB/WR/TE by observed share so the total stays at "
+        f"{sum(SHIPPED.values())} skill picks. Adj PPG never changes; only replacement level, and so rank.",
         "The board is BIMODAL: at or below QB49, 8 quarterbacks make the top 60; "
-        "at or above QB55, 18 do. The measured value (59) sits on the stable side.",
+        f"at or above QB55, 18 do. The measured value ({SHIPPED['QB']}) sits on the "
+        "stable side.",
         "USE: 'Worst rank' is where a player lands if the QB assumption breaks "
         "against him. Draft off it and you cannot be wrong by more than the swing. "
         "Sorted by it.",

@@ -2831,3 +2831,385 @@ baselines are one value per position × round bucket, so two first-round backs a
 player to this model. `pick` is already a candidate in `fit_rookie_weights` and did not
 clear alpha for RB or WR; only TE/age ships. Worth re-testing now that Phase 13.5 has shown
 `pick` carries real signal on the availability side.
+
+### Correction: `Worst rank` is the wrong drafting order (Aug 12)
+
+The QB59 stress test shipped with the instruction "draft off the Worst rank column."
+Jack caught that this contradicts the QB59 decision, and he is right.
+
+`Worst rank` is the worst rank a player holds across QB45–QB70. For a quarterback that is
+his rank under **QB45–49** — the scenario the phase examined and rejected. QB59 is a
+measured count off a real mock; QB45 is a point on a sweep that nothing observed. So the
+instruction amounted to: keep the measured assumption, then draft as though the rejected
+one might be true.
+
+**And the asymmetry makes it actively wrong, not merely inconsistent.** The two errors are
+8:1 — waiting on QB when the room takes 59 costs ~150 points; taking one early when the
+room takes 45 costs ~19. `Worst rank` is a minimax criterion, and **minimax minimizes
+regret in rank space, not in points space.** Under a loss function that lopsided it does
+not reduce exposure; it maximizes exposure to the expensive error.
+
+The generalizable rule, and the one this project should carry: **a robustness criterion is
+only conservative if the losses it hedges across are symmetric.** Check that before
+adopting one. A minimax rule applied to an asymmetric loss is a confident bet wearing the
+costume of caution.
+
+Note also that the difference was never league-wide: for RB, WR and TE the two orderings
+differ by at most 14–26 places. The entire disagreement lived in the one position where
+the loss function is most lopsided, which is precisely where a symmetric rule does the
+most damage.
+
+The stress test keeps two legitimate uses, both narrower than an ordering: the robust 46
+as a **tiebreaker** between adjacent players, and the rounds 1–2 QB run as a **live read**.
+`BUILD_RUNBOOK.md` is corrected.
+
+---
+
+## Phase 13.6 — twelve rounds, and ADP that reaches them (Aug 12)
+
+The league added a fifth bench spot: 32 teams × 12 rounds = **384 picks**, up from 352.
+Two things had to change with it, and only one of them was the arithmetic.
+
+### The board died at round 6, and had all along
+
+FFC's deepest 2026 2QB data runs out around **pick 188**. That is 5.9 rounds of a 32-team
+draft. Every player past it had `has_adp = false`, which on this board means hard-capped
+below every ADP-bearing player and shaded pink regardless of projection — so from round 7
+on, the sheet ordered players by a rule that had nothing to do with the model. Six of
+twelve rounds. The board was unusable in exactly the half of the draft where a 32-team
+room stops being obvious.
+
+This was true before the roster change; twelve rounds only made it louder. It never
+surfaced because the earlier phases' verification all lived in the top 60, where FFC is
+dense and the failure is invisible.
+
+### Fix: the mocks become the feed
+
+`src/mock_adp.py` builds ADP out of two real 32-team superflex mocks — 736 picks
+transcribed by hand from the Sleeper boards, resolved to player_ids, averaged. Coverage
+goes **188 → 312 players, 5.9 → 9.8 rounds**. Of the model's top 200, six lack ADP, and
+they are Joe Flacco, Derek Carr, Russell Wilson, Jeff Driskel, Easton Stick and Emari
+Demercado. Those pink rows are correct.
+
+**It replaces FFC on this board rather than filling its gaps**, and that is the load-bearing
+decision. The tempting version keeps FFC through pick 188 and uses mocks past it. But
+`compute_replacement_ranks` reads the ADP *order* of the first `skill_picks` names, and
+pick 150 of a 12-team draft is not the same draft capital as pick 150 of a 32-team draft.
+Mixing two scales inside one ordering corrupts replacement level at every position with
+nothing downstream able to notice — the same class of silent error the `expected_drafted`
+sum check was added to catch. One scale, or the other.
+
+**The honest cost:** two drafts against FFC's hundreds, and mock A had 31 of 32 teams
+autodrafting. That thinness ships onto the sheet as `times_drafted` and `adp_stdev` rather
+than living in a comment.
+
+### Two mocks of different lengths
+
+Mock A ran 11 rounds, mock B 12. Averaging raw pick numbers would treat A's last pick as
+32 picks earlier than B's when both mean *the end of the draft*, so A is rescaled to the
+384-pick shape (×384/352) and averaged there.
+
+A player taken in **only one** mock is not a player with one observation — he is a player
+one room passed on entirely, which in a 32-team draft is evidence. The missing observation
+is censored at pick 385, the first pick that did not happen. He sorts behind a player taken
+at the same depth twice, and his stdev blows up to say how little is known, which widens
+his Draft Target cushion rather than faking a precision two drafts cannot support. 17 of
+312 players are in this state.
+
+### Replacement level: same treatment, same arithmetic
+
+`expected_drafted` goes from the Phase 13 mock's raw counts to the average of both mocks,
+with A put on the 12-round scale first:
+
+| | QB | RB | WR | TE | total |
+|---|---|---|---|---|---|
+| mock A, as drafted (11 rd) | 59 | 92 | 145 | 56 | 352 |
+| mock A, scaled to 12 rd | 64 | 100 | 158 | 61 | 384 |
+| mock B, as drafted (12 rd) | 60 | 97 | 165 | 62 | 384 |
+| **shipped average** | **62** | **99** | **162** | **61** | **384** |
+
+The bar moves down 0.0–0.35 PPG depending on position — QB +0.17, RB +0.00, WR +0.30,
+TE +0.35 of VOR — so this is not a re-ranking, it is a recalibration. **QB62 is on the same
+side of the QB49/50 cliff Phase 13.5 found**, which is the only thing the QB count has ever
+had to get right.
+
+### What verified this
+
+The transcription is 736 hand-read cells, so it gets a checksum rather than trust: the
+position counts implied by each transcription reproduce the counts read off the live
+boards exactly — QB 59 / RB 92 / WR 145 / TE 56 for A, QB 60 / RB 97 / WR 165 / TE 62 for
+B. A single misread cell would break one of those totals. Both landed.
+
+Name resolution is first-initial + surname prefix (the boards truncate: "T. Henders…"),
+narrowed by the team the cell prints, walked in pick order so a player already taken can't
+be taken twice — which is what separates the two `B. Robinson / RB / ATL` cells in each
+mock into Bijan in round 1 and Brian in round 4.
+
+**Known gap, unchanged by this phase:** Travis Hunter, Jarquez Hunter, Will Howard and
+Zack Kuntz are drafted in both mocks and appear on neither board, because nflreadpy's
+player table doesn't carry them as modeled skill players (Hunter is a CB there). They were
+undraftable here before and still are. Worth a Phase 14 look, since Travis Hunter went in
+round 6 of both mocks.
+
+---
+
+## Phase 13.7 — Travis Hunter was never on the board (Aug 12)
+
+Phase 13.6's transcription surfaced seven names drafted in both 32-team mocks that the
+model has never heard of. One of them is not like the others.
+
+**Travis Hunter went in round 6 of both mocks and had never appeared on any board here.**
+Not ranked low — absent. `features.load_veteran_stats` filters nflverse stat rows to
+positions QB/RB/WR/TE before reading a single number, and nflverse carries Hunter as a
+**CB**. Every receiving row he has was dropped at the source, three modules deep, silently.
+
+That is worse than a bad projection. A player rated 180th is an opinion you can argue with
+on the clock; a player who isn't on the sheet produces no opinion at all, and the gap is
+invisible precisely because nothing is there to notice.
+
+### The filter is the model's membership test, so the fix goes upstream of it
+
+`position_overrides.csv`, hand-maintained, same convention as `injury_overrides.csv`:
+
+    player_name,position,note
+    Travis Hunter,WR,"nflverse carries him as CB..."
+
+Applied by `src/position_overrides.py` at every point where an nflverse position is read
+before a position filter — `features.load_veteran_stats` (the baseline) and
+`situational._load_season_usage` (the usage trend). It could not be a single patch in
+`features.py` because four modules pull their own frames from nflverse and each applies
+its own filter; a fix in one would have given Hunter a baseline and no trend.
+
+**A file rather than a constant**, because the next miscoded player should be a one-line
+edit by whoever notices him missing, not a code change by whoever still remembers this.
+
+### An unmatched name raises, and the raise is the diagnostic
+
+`strict=True` on the veteran stats frame: a name matching nothing there means the override
+did nothing and the player stays off the board, which is the exact failure the file exists
+to prevent. It is off for depth charts and roster snapshots, where a listed player
+legitimately may be absent (Hunter has no offensive depth-chart row, so he takes
+`depth_chart_missing` like any other player without one).
+
+That raise also **sorts the other six missing names into the right bucket**. Jarquez
+Hunter, Will Howard, Zack Kuntz, Audric Estime, Dont'e Houston, Lawrance McCutcheon: adding
+them to this file raises, because nflverse has no offensive rows for them at all in
+2023–25. They are missing for lack of DATA, not lack of a label, and no relabelling
+rescues a player with no baseline. They stay off the board and this file is honest about
+why.
+
+### He is scored as an ordinary WR
+
+Deliberately, over two tempting alternatives. Flagging `baseline_low_confidence` would
+shrink him harder toward the WR mean on the argument that his offensive snap share is
+unlike his comparables; blanking his situational adjustment would sidestep features
+computed off a CB listing. Both are thumbs on the scale that **no backtest has tested**,
+applied to exactly one player — which is the shape of special case the holdout gate exists
+to catch. The model has no two-way concept and is not being given one for a sample of one.
+His receiving line goes through the same shrinkage, the same situational terms and the
+same replacement level as every other receiver, and if that is wrong it will be wrong in a
+way that is visible and arguable on the sheet.
+
+### Why this bumps the model version, and the prediction it falsified
+
+15 → 16 → **17**. The bump was argued for on the grounds that adding a player to a position
+pool moves other players: Hunter joins the WR group `position_competition_top_k` averages
+over at Jacksonville, and the pool baseline shrinkage anchors against.
+
+**Measured against v16, that was wrong.** Zero Jacksonville players moved. Two of 450
+receivers moved, both for unrelated reasons. Every rank below Hunter's 166 shifted by
+exactly +1 — an insertion, not a revaluation. His PPG sits below the top-K competition set
+at his own team, and one player added to a 450-man pool does not move a percentile anchor.
+The mechanism was plausible, cheap to check, and did not happen.
+
+It still bumps, on the honest reason instead of the guessed one: **the board contains a
+player it did not contain before.** A version that tracked only whether existing numbers
+moved would call two boards with different rosters the same version.
+
+### Verification, and a trap in the v16 → v17 diff
+
+Hunter lands at **rank 166, Adj PPG 8.12, mock ADP 185.0, Value Δ +4** — the model
+independently puts him within four picks of where two rooms actually drafted him, which is
+about as much external confirmation as a single player gets here. His drivers read
+`+1.2 age 23 · -0.9 2025 IR · -0.3 19% team share | -1.2 thin sample (7 gm)`, and the thin
+sample is real: seven games of receiving is what there is.
+
+**`compare_boards v16 v17` reports 63 players whose Adj PPG moved, and none of them are
+Hunter's doing.** Between the two pipeline runs nflverse dropped three undrafted rookies
+(Anthony Hankerson, Liam Clifford, Mante Morrow) from its player table, which recomputes
+position competition for their teammates — the movers cluster on PHI, ATL, PIT, NE and CLE,
+and the largest is Elijah Mitchell at rank ~900. The universe went 1087 → 1085: minus three
+rookies, plus Hunter.
+
+This is worth writing down because the diff is exactly the shape that invites a wrong
+conclusion. Sixty-three moves appearing in the same rebuild as a universe change look
+caused by it, and the check that separates them is one line: **which teams moved.** None of
+them was Jacksonville.
+
+---
+
+## Phase 13.6b — A.J. Brown went in round 7, and every checksum said fine (Aug 12)
+
+Jack read the board, saw A.J. Brown at ADP 196.8, checked the mocks, and found him at 1.27
+in **both**. Three players were corrupted, not one, and the way this got past verification
+is more useful than the bug.
+
+### What happened
+
+Mock A's pick 11.16 is a cell reading `A. Brown / QB` with no team — some camp quarterback
+the model has never heard of. The matcher had two independent weaknesses that only
+combined into damage here:
+
+1. **Position was negotiable when the team was blank.** The fallback returned candidates of
+   any position rather than none, so a QB cell matched A.J. Brown, the receiver.
+2. **An already-drafted player could be drafted again.** `free = [...] or pool` was written
+   to avoid dropping a pick, and instead assigned Brown a *second* pick at 336.
+
+`average()` stores one pick per player per mock in a dict. The second write silently
+replaced the first. A.J. Brown's mock A pick went from 27 to 336, and his ADP from 28 to
+197 — six rounds late, on a first-round receiver.
+
+Two more were hit the same way. `J. Lovett / RB` at 11.9 matched **Jeremiyah Love** (the
+symmetric prefix rule let a LONGER board name match a shorter universe one — "Lovett"
+reaching "Love"), dragging Love from 29 to 178. A second `C. Sutton / WR` cell at 12.19 —
+a different Sutton with no team printed — re-took Courtland Sutton and moved him from 96 to
+237.
+
+### Why every check passed
+
+This is the part worth keeping. The transcription was **correct**; the position counts
+still reproduced the live boards exactly; both mocks still had precisely 352 and 384 picks.
+None of it could have caught this, and for one reason: **no pick was lost.** One player was
+credited with two of them. Every check in place counted picks, and counting picks is blind
+to a bug that conserves them.
+
+The invariant that catches it is the one the draft itself enforces and nothing in the code
+had asserted: **within a single mock, a player appears at most once.** `audit()` now raises
+on it before anything is written.
+
+**The general form, and it is not specific to draft boards:** a checksum over TOTALS cannot
+see an error that redistributes within the total. Every check here summed or counted;
+the failure was a permutation. When adding a checksum, ask what class of error it is blind
+to by construction, because that is where the next bug will live.
+
+### The other three fixes, all from the same audit
+
+- **Prefix matching is now asymmetric.** Truncation only makes the board's name shorter, so
+  the board's surname may be a prefix of the model's ("Henders" → Henderson) and never the
+  reverse. This is what stopped "Lovett" reaching Love.
+- **`LAR` vs `LA`.** The boards print Sleeper's abbreviations, the model stores nflverse's,
+  and they agree on everything except the Rams. Nine players — Nacua, Kyren Williams,
+  Stafford, Corum, Adams and four more — had their team check silently disabled and
+  resolved correctly only because no same-surname rival happened to exist. Now normalized
+  through the project's own `TEAM_ABBR_FIXES`.
+- **Team-confirmed cells resolve first.** Both mocks contain an anonymous `T. Scott / WR` a
+  few picks *before* `T. Scott / WR / LAR`, and pick-order-first handed the only Tyler Scott
+  in the universe (a Ram) to the anonymous one. Resolution now runs in two passes.
+
+### What the re-run changed, and what it did not
+
+**Three ADPs moved: A.J. Brown 196.8 → 28.2, Jeremiyah Love 178.1 → 29.1, Courtland Sutton
+236.8 → 95.8.** Every other player on the board is byte-identical. Coverage went 312 → 308:
+Audric Estimé joined, and five deep fliers (Damien Harris, Dante Miller, Dae'Quan Wright,
+Robert Henry Jr., Tyreik McAllister) dropped out because each was a position mismatch with
+no team to confirm it — picks 340-380 cells that were matching the wrong human all along.
+
+### An independent check, added because the internal ones were not enough
+
+Every internal check was consistent with a corrupted board, so the audit now includes one
+that comes from outside the transcription: **compare each player's mock ADP rank against
+FFC's 2QB rank.** 188 players appear in both feeds; the median disagreement is 12 places.
+The largest are Mendoza (+95, a rookie QB a 32-team superflex room reaches for), Stafford
+(-73) and McBride (+47) — all genuine room-vs-market differences on unambiguous names. A
+cell resolved to the wrong human would surface here as a player the market ranks nowhere
+near where "he" went, and none does.
+
+## Phase 13.8 — an 8-team board, and the ADP feed that does not exist (Aug 13)
+
+### The board
+
+`league_config_8team.json`, cloned from Lebron James with `num_teams` 8 and `keeper_rule`
+null (the 8-team league is redraft). Verified programmatically that no other key differs
+from the 12-team config beyond the three naming fields. Nothing in `src/` changed — the
+board is entirely a function of the config, which is what `board_label` was built for.
+
+Build line added to the runbook's refresh block:
+
+    python -m src.build_board --config league_config_8team.json --version 17
+
+### The question it raised, which was the more interesting one
+
+`FFC_TEAMS = 12` in `src/adp.py` is hardcoded and every board reads that one feed. The 6-
+and 8-team boards rescale it for DISPLAY via `format_pick`, and `adp_caveat` attaches a
+CAUTION saying rescaling preserves order but not behavior. That much was known and
+documented.
+
+What was not front-of-mind is that ADP is **not** display-only. `compute_replacement_ranks`
+walks the same list to `skill_picks` and takes the position mix of those picks as
+replacement level, which sets VOR, which sets rank. Its own docstring calls this "the one
+place ADP earns its keep." So the feed does not just mislabel a column.
+
+The structural worry: **pick 112 in a 12-team feed is round 9 — mid-draft. Pick 112 in a
+real 8-team room is round 14 — late draft.** The method reads a mid-draft position mix and
+applies it to a late-draft moment. The deeper a board cuts into the feed relative to the
+feed's own room size, the more that bites.
+
+### The sensitivity, which is higher than it looks
+
+Walking the current feed and pricing the result against the projection curve:
+
+| League | Skill picks | QB | RB | WR | TE |
+|---|---|---|---|---|---|
+| 6-team | 84 | 8 | 32 | 39 | **7 (floor)** |
+| 8-team | 112 | 15 | 37 | 51 | **10 (floor)** |
+| 12-team | 168 | 22 | 55 | 70 | 21 |
+
+Moving the QB cut by ±4 shifts every quarterback's VOR by ~1.0 PPG. RB at −6 is +1.63, TE
+at −6 is +2.74. **The median gap between adjacent players in the top 112 is 0.06 PPG.** The
+board is densely packed, so a whole-position VOR shift of 1.0 PPG is worth roughly fifteen
+places of wholesale movement, not one. Replacement-level error is amplified here, not
+absorbed. That is the number to remember the next time a change touches replacement level.
+
+Two things already insulate the shallow boards: the TE starter floor binds on both (7 > 5
+derived at 6-team, 10 > 9 at 8-team), so TE ignores ADP there regardless; and the feed
+covers 210 players against 112 picks needed, so the tail-extrapolation machinery that
+produced QB63 on the first 32-team build never fires.
+
+### The answer: there is no other feed
+
+`check_8team_adp.py` (throwaway, deleted) pulled `teams=8` and `teams=12` and cut both at
+112. Zero delta at all four positions. Identical payload depth, 211 offensive players each.
+
+That agreement was too perfect to be agreement. The follow-up compared raw ADP values:
+**256 of 256 players byte-identical across the two feeds.** FFC ignores `teams` for
+ppr/2026 and serves one payload. `teams=6` returns a 400.
+
+So the decision — do not spend the hour wiring a per-league feed — is right, but **not for
+the reason the zero-delta output appeared to give.** Nothing was measured and found equal.
+There is one feed, and the round-9-vs-round-14 conflation remains **untested, not
+refuted.** Recording it the other way would have been exactly the failure the runbook names
+elsewhere: absent is a known state, stale is a lie.
+
+Noted in `src/adp.py` at the constant, because a future attempt to pass `teams=8` will
+appear to succeed while changing nothing.
+
+### The general form, which is the part worth keeping
+
+**When two independent sources agree perfectly, check that they are independent before
+crediting the agreement.** Four matching position counts read as confirmation; a matching
+byte count read as one source wearing two hats. The check that distinguished them cost
+thirty seconds and inverted the finding.
+
+This is the same shape as the 13.6b lesson one section up — a checksum over totals cannot
+see a permutation within the total — with the roles reversed. There the aggregate hid a
+real difference; here the aggregate invented a real sameness. Both are answered by asking
+what the check is blind to by construction.
+
+### If this ever needs a real answer
+
+It needs mock drafts run in an 8-team room, transcribed into `data/mock_boards/` the way
+the 32-team board's were in 13.6, and an `expected_drafted` block typed off them. That is
+the path already built for exactly this problem, and it is the only one that does not
+depend on a vendor exposing a parameter it does not expose. Not worth it for a league where
+waivers are deep enough to fix a QB mistake in week 2 — which is the honest reason to leave
+this alone, and a better one than "measured, no difference."

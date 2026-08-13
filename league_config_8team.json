@@ -1,32 +1,26 @@
 {
-    "league_name": "32-Team Superflex PPR",
-    "config_key": "32_team_superflex",
-    "board_label": "32Team",
-    "num_teams": 32,
-    "total_rounds": 12,
+    "league_name": "8-Team Full PPR",
+    "config_key": "8_team_ppr",
+    "board_label": "8Team",
+    "num_teams": 8,
+    "total_rounds": 16,
     "regular_season_weeks": [1, 14],
     "playoff_weeks": [15, 17],
     "fantasy_season_length": 14,
-    "adp_format": "2qb",
-    "adp_mock_file": "data/mock_adp_32team.csv",
-    "expected_drafted": {
-        "QB": 62,
-        "RB": 99,
-        "WR": 162,
-        "TE": 61
-    },
     "roster_slots": {
+        "QB": 1,
         "RB": 2,
         "WR": 2,
         "TE": 1,
         "FLEX": 1,
-        "SUPERFLEX": 1,
-        "Bench": 5
+        "K": 1,
+        "DST": 1,
+        "Bench": 8
     },
     "scoring": {
         "pass_yard": 0.04,
-        "pass_td": 4,
-        "interception": -1,
+        "pass_td": 6,
+        "interception": -2,
         "rush_yard": 0.1,
         "rush_td": 6,
         "reception": 1,

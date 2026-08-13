@@ -7,6 +7,22 @@ from src.team_codes import normalize_team_column   # <-- this line needs to be t
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# FFC IGNORES `teams` (verified Aug 13, ppr/2026). This constant, and the
+# `teams` parameter on fetch_ffc_adp() below, describe a choice the API does
+# not actually offer: teams=8 and teams=12 return byte-identical payloads,
+# all 256 players. teams=6 is a 400.
+#
+# So there is ONE FFC feed, and every board reads it. `adp_format` is a real
+# lever; `teams` is not. Do not read the 12 below as "we chose 12-team ADP" --
+# nothing was chosen, and a future attempt to select an 8-team feed will
+# appear to work while changing nothing at all.
+#
+# The consequence worth remembering is in compute_replacement_ranks(), which
+# takes the position mix of the first `skill_picks` of this feed as
+# replacement level. For a shallow league that reads a MID-draft mix (pick 112
+# is round 9 of a 12-team room) and applies it to a LATE-draft moment (round
+# 14 of an 8-team room). That conflation is UNTESTED, not refuted -- the only
+# feed that could have tested it does not exist. See Phase 13.8.
 FFC_TEAMS = 12
 FFC_YEAR = 2026
 FFC_FORMAT = "ppr"  # PPR, non-superflex -- matches league_config_lebronjames.json

@@ -17,7 +17,7 @@ Injuries and ADP move; the model does not need refitting for either. `MODEL_VERS
 where it is — the convention in `build_board.py` is explicit that a data refresh is not a
 version bump.
 
-### 1. Update the injury file by hand
+### 1. Update the two hand-maintained files
 
 `injury_overrides.csv` is the one input the pipeline never touches, and it is the one most
 likely to be stale.
@@ -31,14 +31,32 @@ An unmatched name **raises**, which is the behaviour you want. A *missing* name 
 and leaves an injured player sitting in the pool looking like a bargain — which is the
 failure this file exists to prevent.
 
+`position_overrides.csv` is the other one, and it is checked far less often because it
+changes far less often. It corrects nflverse positions — currently one row, Travis Hunter,
+who nflverse carries as a CB and who was therefore **absent from the board entirely**, not
+ranked low. Add a row when a player you can see being drafted isn't on the sheet at all:
+
+    player_name,position,note
+
+An unmatched name raises here too, and that raise is informative: it means nflverse has no
+rows for that name at all, so the player has no offensive snaps in the 2023–25 window and
+this file is the wrong tool for him. Jarquez Hunter, Will Howard, Zack Kuntz, Dont'e
+Houston and Lawrance McCutcheon are all in that category — missing for lack of data, not
+lack of a label. (Audric Estimé was on that list until an nflverse refresh brought him
+back, which is a reminder that the list is a snapshot, not a fact about the players.)
+
+    python -m src.position_overrides     # selftest + prints what's in the file, no network
+
 ### 2. Refresh and rebuild
 
 ```bash
 python -m src.pipeline
+python -m src.mock_adp     # 32-team only; see below
 
-python -m src.build_board --config league_config_32team.json      --version 15 --note "pre-draft refresh"
-python -m src.build_board --config league_config_lebronjames.json --version 15 --note "pre-draft refresh"
-python -m src.build_board --config league_config_dunlap.json      --version 15 --note "pre-draft refresh"
+python -m src.build_board --config league_config_32team.json      --version 17 --note "pre-draft refresh"
+python -m src.build_board --config league_config_lebronjames.json --version 17 --note "pre-draft refresh"
+python -m src.build_board --config league_config_dunlap.json      --version 17 --note "pre-draft refresh"
+python -m src.build_board --config league_config_8team.json       --version 17 --note "pre-draft refresh"
 ```
 
 Each build must print both gate lines before it writes anything:
@@ -48,31 +66,65 @@ Holdout gate: PASSED (folds [2025, 2024, 2023])
 Playing-time gate: PASSED (ships predictor B, n=719)
 ```
 
+The 32-team build must also print the line that says which feed it read:
+
+```
+ADP: 32-Team Superflex PPR reads MOCK DRAFT ADP from data/mock_adp_32team.csv
+```
+
+If that line is missing, the board fell back to FFC and goes pink from round 7 on.
+
+### 2b. The 32-team ADP feed is mock drafts, not FFC
+
+`src/mock_adp.py` rebuilds `data/mock_adp_32team.csv` from the transcribed boards in
+`data/mock_boards/`. It only needs re-running when a **new mock is added** — it does not
+depend on the pipeline — but it is cheap and re-running it after `src.pipeline` costs
+nothing.
+
+Adding a mock: transcribe it into `data/mock_boards/`, one `round.pick|name|pos|team` line
+per pick, add it to `MOCKS` in `src/mock_adp.py`, and re-run. The module **raises** if the
+pick count doesn't match teams × rounds, and `audit()` **raises if one player resolves to
+two picks inside the same mock** — the failure that put A.J. Brown in round 7 with every
+other check green (Phase 13.6b). Check the position counts it prints against the live
+board, and read the "two rooms disagree" list it prints at the end: a cell resolved to the
+wrong human usually shows up there as a several-hundred-pick gap.
+
 ### 3. Regenerate the stress test — 32-team only
 
 ```bash
 python -m src.qb_stress_test
 ```
 
-**Do not skip this after a rebuild.** `QB59_stress_test.xlsx` is computed from the board's
+**Do not skip this after a rebuild.** `QB_stress_test.xlsx` is computed from the board's
 Adj PPG, so a refresh silently invalidates it. A worst-case rank computed from superseded
 projections, sitting next to a current board, is worse than not having the file.
+
+`SHIPPED` in that module is a hand-kept copy of `expected_drafted` from
+`league_config_32team.json`. If you change one, change both, or the sweep is stress-testing
+a board nobody shipped.
 
 ### 4. Read what the refresh did
 
 ```bash
-python -m src.compare_boards <previous board>.xlsx 2026_32Team_Board_v15.xlsx --focus 200
+python -m src.compare_boards 2026_32Team_Board_v16.xlsx 2026_32Team_Board_v17.xlsx --focus 200
 python -m src.sanity_top_n --top 60
 ```
 
-Two things to watch:
+Three things to watch:
 
+- **Movers clustered on a few TEAMS are nflverse churn, not your change.** August roster
+  moves drop undrafted rookies out of the player table, which recomputes position
+  competition for everyone left on those teams. The v16 → v17 diff showed 63 such movers on
+  PHI/ATL/PIT/NE/CLE from three UDFAs disappearing — none of it caused by the rebuild's
+  actual change. Group the movers by team before concluding anything.
 - **A large move with `dPPG` near zero is a sort-order effect, not a revaluation.** Check
   the GAINED/LOST ADP flag. `compute_draft_targets` sorts by `(out_for_season, has_adp,
   vor, ...)`, so `has_adp` gates *above* VOR — a player entering the FFC feed vaults over
   the entire no-ADP block without the model changing its mind about him.
-- **The top-60 position mix.** If the QB count moves on the 32-team board, ADP has shifted
-  `expected_drafted` and you are near the QB49/50 cliff.
+- **The top-60 position mix.** If the QB count moves on the 32-team board, check
+  `expected_drafted` — you are near the QB49/50 cliff. Note that on the 32-team board ADP
+  can no longer move `expected_drafted` on its own: the counts are typed in from the mocks
+  and the config raises if they don't sum to teams × rounds.
 
 `sanity_top_n` checks only mechanical things — duplicates, nulls, retirees, drivers citing
 dead features. Everything it prints under "board LIKES / FADES" is a judgement call it is
@@ -82,16 +134,39 @@ deliberately refusing to make for you.
 
 ## Draft day, 32-team superflex
 
-Have both files open: `2026_32Team_Board_v15.xlsx` and `QB59_stress_test.xlsx`.
+**Draft off the board.** `2026_32Team_Board_v17.xlsx`, in rank order.
 
-**Draft off the `Worst rank` column.** 46 players are top-60 under every QB scenario from
-45 to 70 — RB 20, WR 17, QB 7, TE 2. Those are the ones the board is genuinely confident
-about.
+### Why not the stress test's `Worst rank` column
 
-**The QB6–QB16 tier is a live read, not a pre-commitment.** Those fourteen swing 40–80
-places on the QB assumption. If quarterbacks go fast in rounds 1–2, the mock's QB59 is
-right and that tier is a real value band. If they are still sitting at pick 60, replacement
-is shallower than modelled and they are forty ranks worse than the board says.
+An earlier version of this runbook said to draft off it. That was wrong, and the reason is
+worth keeping because it is a general trap.
+
+`Worst rank` is the worst rank a player holds across QB45–QB70. For a quarterback that is
+his rank under **QB45–49** — the scenario we examined and rejected. QB62 is a measured
+count, now off two real mocks; QB45 is a point on a sweep that nothing observed. Drafting off
+`Worst rank` means hedging toward the assumption you decided not to believe.
+
+It is worse than merely inconsistent. The two errors are **8:1 asymmetric**: waiting on QB
+when the room takes 59 costs ~150 points (you start a replacement-level QB in a superflex
+slot); taking one early when the room takes 45 costs ~19 (a slightly worse skill player
+twenty picks later). `Worst rank` is a **minimax rule, and minimax minimizes regret in rank
+space, not in points space.** Under a loss function that lopsided it does not reduce
+exposure — it maximizes exposure to the expensive error.
+
+The general form: **a robustness criterion is only conservative if the losses it is hedging
+across are symmetric.** Check that before adopting one.
+
+For RB, WR and TE the two orderings differ by at most 14–26 places, so nothing is lost
+outside quarterback anyway.
+
+### What the stress test is still for
+
+- **A tiebreaker, not an ordering.** If two players sit adjacent on the board and one is in
+  the robust 46 (RB 20, WR 18, QB 6, TE 2) and the other is not, prefer the robust one.
+- **A live read in rounds 1–2.** If quarterbacks are *not* going early, that is evidence
+  your room is not the mock's room, and the QB6–QB16 tier gets worse rather than better.
+  Those fourteen swing 40–80 places on the assumption. This is a mid-draft update, which is
+  the form the information should have taken from the start.
 
 **Two places your judgement should outrank the board:**
 

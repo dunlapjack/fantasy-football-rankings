@@ -3,6 +3,7 @@ from pathlib import Path
 import polars as pl
 import nflreadpy as nfl
 from src.team_codes import normalize_team_column, franchise_key_column
+from src import position_overrides
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLAYCALLER_PATH = PROJECT_ROOT / "playcaller_history.csv"
@@ -644,8 +645,16 @@ def _load_season_usage(seasons):
     raw = nfl.load_player_stats(sorted(seasons)).filter(
         (pl.col("season_type") == "REG")
         & pl.col("player_id").is_not_null()
-        & pl.col("position").is_in(TREND_POSITIONS)
     )
+
+    # Same reason as features.load_veteran_stats: the position filter below
+    # decides membership, so an overridden player has to be relabelled
+    # first or he silently has no usage trend. Non-strict here -- a name
+    # that is missing from this frame has already raised upstream, and a
+    # second identical failure adds nothing but noise to the traceback.
+    raw = position_overrides.apply(raw, name_column="player_display_name")
+
+    raw = raw.filter(pl.col("position").is_in(TREND_POSITIONS))
 
     team_column = "team" if "team" in raw.columns else "recent_team"
 

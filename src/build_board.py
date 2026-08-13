@@ -105,7 +105,38 @@ CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
 # 0.0%. Same rule as the 13->14 bump: the numbers moved. Rank still does
 # not, and `compare_boards --expect rank-identical` against v14 is the
 # check.
-MODEL_VERSION = 15
+#
+# 15 -> 16 (Aug 12), Phase 13.6. Two changes on the 32-team board, both
+# ranking logic by this constant's own definition. Replacement level moves
+# (QB59/RB92/WR145/TE56 -> QB62/RB99/WR162/TE61, the average of two mocks
+# on a 12-round scale), which reprices every VOR. And ADP itself changes
+# source, from the FFC 12-team 2QB feed to the mocks -- which reorders far
+# more of the sheet than the replacement move does, because `has_adp`
+# gates ABOVE vor in the sort and ~120 players cross that gate.
+#
+# The other two boards are untouched: `apply_mock_adp` is a no-op without
+# `adp_mock_file` in the config, and their replacement levels are derived
+# as before. They are rebuilt at v16 anyway, so that three boards sitting
+# in one folder on draft day can't be from two different versions.
+#
+# 16 -> 17 (Aug 12), Phase 13.7. `position_overrides.csv` adds Travis Hunter
+# to the universe on all three boards.
+#
+# The bump was predicted on the wrong grounds and the measurement is worth
+# keeping. The claim was that adding a player to a position pool moves other
+# players: he joins the WR group `position_competition_top_k` averages over
+# at JAX and the pool baseline shrinkage anchors against. MEASURED against
+# v16: zero Jacksonville players moved, and 2 of 450 receivers -- both for
+# unrelated reasons. His PPG sits below the top-K competition set at his own
+# team, and one player in a 450-man pool does not shift a percentile anchor.
+# Every rank below his 166 shifted by exactly +1, which is an insertion, not
+# a revaluation.
+#
+# It still bumps, on the honest reason rather than the guessed one: the
+# board contains a player it did not contain before. A version that only
+# tracked whether existing numbers moved would call two boards with
+# different rosters the same version.
+MODEL_VERSION = 17
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -1003,6 +1034,76 @@ def select_adp_variant(players, config):
     return players
 
 
+def apply_mock_adp(players, config):
+    """
+    PHASE 13.6. Replaces the FFC feed with ADP measured in this league's own
+    mock drafts, for any config carrying an `adp_mock_file`.
+
+    WHY A LEAGUE WOULD WANT THIS
+    ----------------------------
+    FFC's deepest 2026 2QB data stops around pick 190. A 32-team draft is 384
+    picks long, so from round 7 onward every remaining player had `has_adp`
+    false: hard-capped below every ADP-bearing player and shaded pink, in the
+    exact half of the draft the board exists to help with. Two real 32-team
+    mocks cover all 12 rounds, and they describe a 32-team superflex room
+    rather than a 12-team 2QB room rescaled and hoped over.
+
+    IT REPLACES THE FEED RATHER THAN FILLING ITS GAPS
+    -------------------------------------------------
+    The tempting version keeps FFC where it exists and uses the mocks only
+    past pick 190. That would be wrong in a way nothing downstream could
+    catch: pick 150 in a 12-team draft and pick 150 in a 32-team draft are
+    different players' worth of draft capital, and compute_replacement_ranks
+    reads the ADP ORDER of the first `skill_picks` names to decide where
+    replacement level sits at every position. Mixing two scales inside one
+    ordering silently corrupts that. One scale, or the other.
+
+    The cost is stated rather than hidden: two mocks is a much thinner sample
+    than FFC's hundreds, and one of them had most teams autodrafting. The
+    `times_drafted` and `adp_stdev` columns carry that thinness onto the sheet
+    -- a player taken in only one mock shows stdev in the dozens of picks,
+    which is what widens his Draft Target cushion instead of pretending to a
+    precision two drafts cannot support.
+    """
+    mock_file = config.get("adp_mock_file")
+    if not mock_file:
+        return players
+
+    path = PROJECT_ROOT / mock_file
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{config['league_name']} asks for mock ADP at {mock_file}, which "
+            f"does not exist. Build it with `python -m src.mock_adp`, or drop "
+            f"`adp_mock_file` from the config to fall back to the FFC feed."
+        )
+
+    mock = pl.read_csv(path).select([
+        "player_id",
+        pl.col("adp").alias("mock_adp"),
+        pl.col("adp_high").alias("mock_adp_high"),
+        pl.col("adp_low").alias("mock_adp_low"),
+        pl.col("adp_stdev").alias("mock_adp_stdev"),
+        pl.col("times_drafted").alias("mock_times_drafted"),
+    ])
+
+    players = players.join(mock, on="player_id", how="left")
+    players = players.with_columns([
+        pl.col("mock_adp").alias("adp"),
+        pl.col("mock_adp_high").alias("adp_high"),
+        pl.col("mock_adp_low").alias("adp_low"),
+        pl.col("mock_adp_stdev").alias("adp_stdev"),
+        pl.col("mock_times_drafted").alias("times_drafted"),
+        pl.col("mock_adp").is_not_null().alias("has_adp"),
+    ]).drop([c for c in players.columns if c.startswith("mock_")])
+
+    covered = players.filter(pl.col("has_adp")).height
+    once = players.filter(pl.col("times_drafted") == 1).height
+    print(f"ADP: {config['league_name']} reads MOCK DRAFT ADP from {mock_file} "
+          f"-- {covered} players covered, {once} of them from a single mock. "
+          f"The FFC feed is not used on this board.")
+    return players
+
+
 def compute_starter_ranks(config):
     """
     LEGACY (Phase 8 - Phase 10). How many players at each position get
@@ -1483,11 +1584,11 @@ def build_notes(replacement_ranks, teams, rounds, config=None, starter_ranks=Non
         "Rookies (Rook = R) take no situational adjustment and share one cohort baseline per "
         "position/round, so two rookies of the same draft round can tie exactly. K and DST are "
         "not modeled; draft those separately.\n"
-        + adp_caveat(teams)
+        + adp_caveat(teams, mock_sourced=bool((config or {}).get("adp_mock_file")))
     )
 
 
-def adp_caveat(teams, source_teams=12):
+def adp_caveat(teams, source_teams=12, mock_sourced=False):
     """
     The honest label on the ADP columns.
 
@@ -1500,6 +1601,26 @@ def adp_caveat(teams, source_teams=12):
     12-team ADP implies. The column is a reference for order, not a prediction
     of when someone goes in your draft.
     """
+    if mock_sourced:
+        # Phase 13.6. No rescaling happened and none is needed: these picks
+        # were made in this league's own draft shape, so the caveat the rest
+        # of this function exists to give does not apply. The one that
+        # replaces it is about sample size, which is the honest weakness of
+        # two drafts.
+        return (
+            f"ADP (Ovr) = average overall pick across two real {teams}-team "
+            f"superflex mock drafts (no rescaling -- these picks were made in "
+            f"this draft's own shape, unlike the FFC feed every other board "
+            f"here reads). ADP (Rd.Pk) is that number as {format_pick(13, teams)}-style "
+            f"Rd.Pk. CAUTION: two drafts is a thin sample next to FFC's "
+            f"hundreds, and one of the two had most teams autodrafting. A "
+            f"player taken in only ONE of the two is averaged against pick "
+            f"{teams * 12 + 1} -- going undrafted in a {teams}-team room is "
+            f"evidence, not a missing value -- so his ADP sits deliberately "
+            f"deeper than his one observed pick and his Draft Target cushion "
+            f"widens to match."
+        )
+
     base = (
         f"ADP (Ovr) = overall pick number in {source_teams}-team FFC mock drafts. "
         f"ADP (Rd.Pk) is that same number re-expressed for a {teams}-team draft "
@@ -1786,6 +1907,11 @@ def prepare_board_frame(features_path, config, quiet=False):
         players = players.with_columns(
             pl.col(column).cast(pl.String).str.to_lowercase().eq("true").alias(column)
         )
+
+    # AFTER the boolean cast, because this rewrites `has_adp` itself, and
+    # BEFORE anything reads ADP -- replacement level, Value delta, draft
+    # targets and the row sort all descend from it.
+    players = apply_mock_adp(players, config)
 
     players = apply_injury_overrides(players)
 

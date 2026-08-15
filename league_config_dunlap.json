@@ -3,9 +3,16 @@
     "config_key": "dunlap_family",
     "board_label": "6Team",
     "num_teams": 6,
+    "draft_slot": 5,
     "total_rounds": 16,
-    "regular_season_weeks": [1, 12],
-    "playoff_weeks": [13, 14],
+    "regular_season_weeks": [
+        1,
+        12
+    ],
+    "playoff_weeks": [
+        13,
+        14
+    ],
     "fantasy_season_length": 12,
     "roster_slots": {
         "QB": 1,

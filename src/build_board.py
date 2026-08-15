@@ -51,6 +51,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from src.ranking import load_situational_weights
+from src.vona_columns import snake_gaps, default_slot, compute_ppg_pos_rank
 from src.playing_time import (
     expected_games_for_rookies,
     load_playing_time_model,
@@ -137,6 +138,12 @@ CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
 # tracked whether existing numbers moved would call two boards with
 # different rosters the same version.
 MODEL_VERSION = 17
+
+# Last row of the merged notes block. The header row sits two below it.
+# Phase 14 moved this from a hardcoded 6 (with the header hardcoded at 8)
+# because the notes tripled in length and the two numbers have to move
+# together or the instructions get clipped by the header.
+NOTES_LAST_ROW = 10
 
 HISTORY_SHEET = "Build History"
 INJURY_OVERRIDES_PATH = PROJECT_ROOT / "injury_overrides.csv"
@@ -280,15 +287,52 @@ COLUMNS = [
     # -- 1. WHO --------------------------------------------------------
     ("Rank", 7), ("Pos", 6), ("Player", 24),
     # -- 2. ACT --------------------------------------------------------
-    ("Draft Target", 24), ("VOR", 8), ("Adj PPG", 9),
-    ("Value Δ (picks)", 12), ("ADP (Rd.Pk)", 12), ("ADP (Ovr)", 10),
+    # Phase 14 reordered this block. Through v17 it opened with Draft
+    # Target, on the reasoning that it "answers the only question the
+    # clock asks." The draft simulator retired that claim: Draft Target is
+    # ADP minus one standard deviation, a per-player heuristic that does
+    # not know when your next pick is, and VONA answers the same question
+    # against your actual pick schedule. Keeping the weaker version in the
+    # first column invites you to run two conflicting rules on the clock,
+    # so it moves to CHECK and the inputs VONA actually consumes move up.
+    #
+    # What VONA needs, in the order you touch it: the projection, where
+    # the room takes him, and his rank among his own position -- because
+    # VONA asks a POSITIONAL question and this sheet is sorted globally.
+    #
+    # REMOVED AGAIN IN THE SAME PHASE: "Wait 5" / "Wait 19", which
+    # precomputed the cost of passing on a player. They were built, tested
+    # and cut, and the cut is the more useful result. Two reasons:
+    #
+    #   1. They do not work well enough. A policy that drafted straight off
+    #      the frozen columns scored +18.8 against best-available where the
+    #      same policy computing the survivor LIVE scored +59.7. Freezing
+    #      the ADP assumption throws away two thirds of the edge, because
+    #      the correction that matters -- "four backs just went in six
+    #      picks, so count four" -- is exactly the one a precomputed column
+    #      cannot make.
+    #   2. They are not comparable across rows. The number is anchored to
+    #      each player's own ADP, so a tail player is measured against the
+    #      people behind HIM. Joe Mixon at ADP 187 outscored Jahmyr Gibbs,
+    #      which reads as "bigger cliff" and means "cliff nobody will fall
+    #      off." A column you have to remember not to sort is a trap.
+    #
+    # The live calculation off Adj PPG + PPG@Pos + ADP (Ovr) is three
+    # columns and one subtraction, and it is worth three times as much.
+    # compute_wait_cost() survives in src/vona_columns.py because
+    # src/drift_test.py is what measured all of the above.
+    ("Adj PPG", 9), ("ADP (Ovr)", 10), ("PPG@Pos", 9),
+    ("VOR", 8), ("Bye", 6),
     # -- 3. CHECK ------------------------------------------------------
+    # Draft Target and Value Δ are now reference rather than instruction;
+    # see the notes block on the sheet.
+    ("Draft Target", 24), ("Value Δ (picks)", 12), ("ADP (Rd.Pk)", 12),
     # Phase 11. Plain-language decomposition of Sit Adj: the largest
     # signed contributions, relative to an average player at that
     # position. Generated from the same weights that produce the number
     # in Sit Adj, so the two cannot disagree.
     ("Why (value drivers)", 46),
-    ("Bye", 6), ("Team", 7), ("Recent Injury", 12),
+    ("Team", 7), ("Recent Injury", 12),
     # Phase 11 CP8. Availability, kept OUT of the ranking on purpose.
     # Exp Gm is this league's regular season minus known PUP/NFI absence;
     # Exp Pts is Adj PPG x Exp Gm. Adj PPG stays an honest per-game rate,
@@ -1104,6 +1148,39 @@ def apply_mock_adp(players, config):
     return players
 
 
+def league_gaps(config):
+    """
+    The two snake-draft gaps for this league, from `draft_slot` in the
+    config. Falls back to the middle of the room when the slot is unknown,
+    which is the least-wrong single guess: it is the only slot whose two
+    gaps are both close to the average.
+    """
+    teams = int(config["num_teams"])
+    slot = int(config.get("draft_slot") or default_slot(teams))
+    slot = max(1, min(teams, slot))
+    return snake_gaps(teams, slot), slot
+
+
+def add_vona_columns(board, config):
+    """
+    Phase 14. Attaches `ppg_pos_rank` -- rank within position by projected
+    points, best = 1.
+
+    One column, and it is the one that survived. The board is sorted by
+    VOR, which is a GLOBAL order; the question you ask on every pick is
+    positional ("who is the best tight end left"). Without this you filter
+    and scan the sheet on the clock. With it you read down a column.
+
+    A DISPLAY column. It does not touch `adjusted_fantasy_points_per_game`,
+    VOR, or the sort, so no rank moves and MODEL_VERSION does not bump. The
+    model did not change; the way you read it did.
+    """
+    rows = board.to_dicts()
+    return board.with_columns(
+        pl.Series("ppg_pos_rank", compute_ppg_pos_rank(rows), dtype=pl.Int32)
+    )
+
+
 def compute_starter_ranks(config):
     """
     LEGACY (Phase 8 - Phase 10). How many players at each position get
@@ -1551,8 +1628,43 @@ def build_notes(replacement_ranks, teams, rounds, config=None, starter_ranks=Non
             "player play fewer games, not play worse in the ones he plays.\n"
         )
 
+    gaps, slot = league_gaps(config or {"num_teams": teams})
+    slot_note = ("draft slot %d" % slot if (config or {}).get("draft_slot")
+                 else "draft slot unknown, assuming %d (middle)" % slot)
+    vona_note = (
+        f"HOW TO USE THIS SHEET (Phase 14). Do not draft straight down Rank. A simulated "
+        f"bakeoff over 120 drafts per league found pure best-available finished LAST of the "
+        f"five model-based strategies in all four leagues, because VOR is computed once "
+        f"against an EMPTY roster and never learns what you already hold -- so it keeps "
+        f"pricing your fifth running back as if he were your first.\n"
+        f"Instead: among positions where a STARTING slot is still empty, take the player with "
+        f"the biggest gap between his Adj PPG and the best man at his position you expect to "
+        f"survive to your next pick. Cap QB at 2 and TE at 2 (QB 3 in superflex). If every gap "
+        f"is near zero, nothing is scarce -- then, and only then, take the best Rank.\n"
+        f"THE CALCULATION, done live. Your two snake gaps in this league are {gaps[0]} and "
+        f"{gaps[-1]} picks ({slot_note}) -- long gap in odd rounds, short gap in even ones. On the "
+        f"clock: for each position where a starting slot is still empty, take the best man left "
+        f"(sort by PPG@Pos), then count how many at that position you expect to go before your "
+        f"next pick and look that many rows further down. The difference in Adj PPG is what "
+        f"passing costs you. Take the biggest one.\n"
+        f"COUNT FROM WHAT YOU HAVE WATCHED, not from ADP (Ovr). ADP is the starting estimate and "
+        f"the room leaves it immediately; if four backs went in the last six picks, count four. "
+        f"That correction is the whole game. A precomputed version of this column shipped briefly "
+        f"in v17.1 and was cut: drafting off the frozen numbers scored +18.8 points against "
+        f"best-available where the same rule computing it live scored +59.7. Two thirds of the "
+        f"edge is in the correction a frozen column cannot make.\n"
+        f"ADP (Ovr) is the right column for \"will he last until my next pick\" -- it is a raw "
+        f"pick number, so compare it to your next pick directly.\n"
+        "Draft Target and Value Δ moved to the CHECK block and are REFERENCE, not instruction. "
+        "Do NOT use Draft Target to judge whether a player lasts to your next pick: it is ADP "
+        "minus one standard deviation rounded into thirds of a round, and for players the market "
+        "likes more than the model it switches meaning entirely to \"Fair value: Round X\" off "
+        "model rank. Two quantities in one column, both bucketed. ADP (Ovr) answers that question "
+        "in raw picks.\n"
+    )
     return (
-        "Rank/VOR = who's best by the stats-only model. VOR = points per game above that "
+        vona_note
+        + "Rank/VOR = who's best by the stats-only model. VOR = points per game above that "
         f"position's replacement level ({levels}), which is why a 26-PPG quarterback does not "
         "outrank a 20-PPG receiver -- in a 1-QB league the gap over the freely available "
         "alternative is what a pick actually buys.\n"
@@ -1664,14 +1776,23 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
     ws.row_dimensions[1].height = 22
 
     # Notes block
-    ws.merge_cells(f"A2:{last_col}6")
+    # Phase 14 grew this block by roughly a screen of text -- the whole
+    # "how to use this sheet" rule now lives here, because a board that
+    # ships without it invites exactly the best-available drafting the
+    # simulator just measured as the worst strategy available. Excel does
+    # not auto-fit merged cells, so the row span and the row heights are
+    # both set explicitly; getting one without the other silently clips
+    # the instructions.
+    ws.merge_cells(f"A2:{last_col}{NOTES_LAST_ROW}")
+    for _r in range(2, NOTES_LAST_ROW + 1):
+        ws.row_dimensions[_r].height = 58
     notes = ws["A2"]
     notes.value = build_notes(replacement_ranks, teams, rounds, config, starter_ranks)
     notes.font = Font(name=FONT_NAME, size=9, color="555555")
     notes.alignment = Alignment(wrap_text=True, vertical="top")
 
     # Header
-    header_row = 8
+    header_row = NOTES_LAST_ROW + 2
     thin_bottom = Border(bottom=Side(style="thin"))
     for i, (label, width) in enumerate(COLUMNS, start=1):
         cell = ws.cell(header_row, i, label)
@@ -1714,6 +1835,7 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
             "Draft Target": row["draft_target"],
             "VOR": row["vor"],
             "Adj PPG": row["adjusted_fantasy_points_per_game"],
+            "PPG@Pos": row.get("ppg_pos_rank"),
             "Value Δ (picks)": (row["value_delta"]
                                 if (has_adp and not out_for_season) else None),
             "ADP (Rd.Pk)": row["adp_slot"] if has_adp else None,
@@ -1808,7 +1930,7 @@ def write_workbook(board, replacement_ranks, config, output_path, build_note=Non
                 cell.font = Font(name=FONT_NAME, size=11, bold=True)
 
     last_row = header_row + board.height
-    ws.freeze_panes = "D9"
+    ws.freeze_panes = f"D{header_row + 1}"
     ws.auto_filter.ref = f"A{header_row}:{last_col}{last_row}"
 
     output_path = Path(output_path)
@@ -1984,6 +2106,7 @@ def prepare_board_frame(features_path, config, quiet=False):
 
     board = compute_vor(players, replacement_ranks)
     board = compute_draft_targets(board, config["num_teams"])
+    board = add_vona_columns(board, config)
     return board, replacement_ranks, starter_ranks
 
 

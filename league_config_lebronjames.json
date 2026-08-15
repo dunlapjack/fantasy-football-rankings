@@ -3,9 +3,16 @@
     "config_key": "lebron_james",
     "board_label": "12Team",
     "num_teams": 12,
+    "draft_slot": 3,
     "total_rounds": 16,
-    "regular_season_weeks": [1, 14],
-    "playoff_weeks": [15, 17],
+    "regular_season_weeks": [
+        1,
+        14
+    ],
+    "playoff_weeks": [
+        15,
+        17
+    ],
     "fantasy_season_length": 14,
     "roster_slots": {
         "QB": 1,

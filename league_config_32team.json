@@ -3,9 +3,16 @@
     "config_key": "32_team_superflex",
     "board_label": "32Team",
     "num_teams": 32,
+    "draft_slot": 4,
     "total_rounds": 12,
-    "regular_season_weeks": [1, 14],
-    "playoff_weeks": [15, 17],
+    "regular_season_weeks": [
+        1,
+        14
+    ],
+    "playoff_weeks": [
+        15,
+        17
+    ],
     "fantasy_season_length": 14,
     "adp_format": "2qb",
     "adp_mock_file": "data/mock_adp_32team.csv",

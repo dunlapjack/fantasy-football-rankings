@@ -185,16 +185,27 @@ def load_board(board_path, features_path=None):
     """
     wb = load_workbook(board_path, read_only=True, data_only=True)
     ws = wb["Draft Board"]
-    rows = [r for r in ws.iter_rows(min_row=9, values_only=True)
+
+    # FIND the header row; do not assume it. It was row 8 through v17 and
+    # moved to row 12 in v17.1 when the Phase 14 notes block grew, and a
+    # hardcoded 8 would not have failed loudly -- it would have read the
+    # notes paragraph as column labels, found no "Adj PPG", and raised
+    # something misleading. `compare_boards.py` already scans for it, which
+    # is the precedent worth copying.
+    header, header_row = None, None
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=40,
+                                         values_only=True), start=1):
+        if row and "Player" in row and "Adj PPG" in row:
+            header, header_row = list(row), i
+            break
+    if header is None:
+        raise ValueError(f"{board_path}: no header row found in the first 40 "
+                         f"rows (looked for 'Player' and 'Adj PPG')")
+
+    rows = [r for r in ws.iter_rows(min_row=header_row + 1, values_only=True)
             if r and r[0] is not None]
     wb.close()
 
-    # Column order is fixed by build_board.COLUMNS; index by the labels in
-    # row 8 rather than by position so a future column insert is caught.
-    wb = load_workbook(board_path, read_only=True, data_only=True)
-    header = [c for c in next(wb["Draft Board"].iter_rows(
-        min_row=8, max_row=8, values_only=True))]
-    wb.close()
     col = {label: i for i, label in enumerate(header) if label}
     for required in ("Pos", "Player", "Adj PPG", "ADP (Ovr)", "Bye",
                      "Rank", "Has ADP", "Draft Target"):

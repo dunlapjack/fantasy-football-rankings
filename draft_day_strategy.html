@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft Day Strategy — 2026</title>
+<style>
+  .viz-root{
+    color-scheme: light;
+    --surface-0:#f4f4f1; --surface-1:#fcfcfb; --surface-2:#efeee9;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#76746e;
+    --rule:#dedcd4;
+    --pos:#2a78d6;      /* gain vs best-available */
+    --neg:#eb6834;      /* loss vs best-available */
+    --neutral:#a8a69c;  /* the baseline itself */
+    --accent:#1baf7a;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])) .viz-root{
+      color-scheme: dark;
+      --surface-0:#111110; --surface-1:#1a1a19; --surface-2:#232322;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#94938a;
+      --rule:#33322f;
+      --pos:#3987e5; --neg:#d95926; --neutral:#6b6a63; --accent:#199e70;
+    }
+  }
+  :root[data-theme="dark"] .viz-root{
+    color-scheme: dark;
+    --surface-0:#111110; --surface-1:#1a1a19; --surface-2:#232322;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#94938a;
+    --rule:#33322f;
+    --pos:#3987e5; --neg:#d95926; --neutral:#6b6a63; --accent:#199e70;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--surface-0);}
+  .viz-root{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+    background:var(--surface-0); color:var(--text-primary);
+    padding:40px 24px 72px; min-height:100vh;
+  }
+  .wrap{max-width:940px;margin:0 auto}
+  header{margin-bottom:36px}
+  h1{font-size:30px;line-height:1.15;margin:0 0 10px;letter-spacing:-.02em}
+  .sub{color:var(--text-secondary);font-size:15px;line-height:1.55;margin:0;max-width:64ch}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;
+     color:var(--text-muted);margin:44px 0 14px;font-weight:600}
+  .rule-box{
+    background:var(--surface-1);border:1px solid var(--rule);border-left:3px solid var(--accent);
+    border-radius:10px;padding:20px 22px;margin:0 0 8px;
+  }
+  .rule-box p{margin:0;font-size:17px;line-height:1.5}
+  .rule-box .why{margin-top:10px;font-size:14px;color:var(--text-secondary);line-height:1.55}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(212px,1fr));gap:14px}
+  .card{background:var(--surface-1);border:1px solid var(--rule);border-radius:10px;padding:16px 18px}
+  .card h3{margin:0 0 3px;font-size:15px}
+  .card .slot{font-size:12px;color:var(--text-muted);margin:0 0 11px}
+  .card p{margin:0;font-size:13.5px;line-height:1.55;color:var(--text-secondary)}
+  .card .gain{display:inline-block;margin-top:11px;font-size:12px;font-weight:600;
+    color:var(--text-primary);background:var(--surface-2);border-radius:5px;padding:3px 8px}
+  .panel{background:var(--surface-1);border:1px solid var(--rule);border-radius:10px;
+         padding:18px 20px 12px;margin-bottom:14px}
+  .panel h3{margin:0 0 2px;font-size:15px}
+  .panel .cap{margin:0 0 14px;font-size:12.5px;color:var(--text-muted)}
+  .row{display:grid;grid-template-columns:118px 1fr 74px;align-items:center;
+       gap:10px;margin-bottom:7px;font-size:13px}
+  .row .lbl{color:var(--text-secondary);text-align:right;white-space:nowrap}
+  .row.base .lbl{color:var(--text-primary);font-weight:600}
+  .track{position:relative;height:19px}
+  .zero{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--rule)}
+  .bar{position:absolute;top:2px;height:15px;border-radius:0}
+  .bar.p{background:var(--pos);border-radius:0 4px 4px 0}
+  .bar.n{background:var(--neg);border-radius:4px 0 0 4px}
+  .bar.z{background:var(--neutral);border-radius:0;width:2px!important}
+  .row .val{font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--text-primary);font-weight:600}
+  .row .val.dim{color:var(--text-muted);font-weight:400}
+  .shape{font-size:11.5px;color:var(--text-muted);font-variant-numeric:tabular-nums;
+         margin:9px 0 0;padding-top:9px;border-top:1px solid var(--rule)}
+  .shape b{color:var(--text-secondary);font-weight:600}
+  details{margin-top:26px;background:var(--surface-1);border:1px solid var(--rule);border-radius:10px;padding:14px 18px}
+  summary{cursor:pointer;font-size:13px;color:var(--text-secondary);font-weight:600}
+  table{border-collapse:collapse;width:100%;margin-top:14px;font-size:12.5px}
+  th,td{text-align:right;padding:6px 9px;border-bottom:1px solid var(--rule);
+        font-variant-numeric:tabular-nums}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--text-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--rule);
+         font-size:12.5px;color:var(--text-muted);line-height:1.65}
+  code{background:var(--surface-2);padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="viz-root"><div class="wrap">
+
+<header>
+  <h1>Stop drafting best available</h1>
+  <p class="sub">Your board sorts by VOR, computed once against an empty roster. It never learns
+  what you already have — so in round 8 it still prices RB5 as if you had none. Across 120 simulated
+  drafts per league, pure best-available finished <strong>last of the five model-based
+  strategies in all four of your leagues.</strong></p>
+</header>
+
+<div class="rule-box">
+  <p><strong>The rule:</strong> take the best player who would change your starting lineup —
+  unless someone else is so much better that waiting on his position costs you more.</p>
+  <p class="why">Everything below is that sentence, priced out. Bars show season points gained
+  or lost against pure best-available off the v17 board.</p>
+</div>
+
+<h2>What each strategy is worth</h2>
+<div id="charts"></div>
+
+<h2>Per league, on the clock</h2>
+<div class="grid">
+  <div class="card">
+    <h3>12-team</h3>
+    <p class="slot">Pick 3 · keeping Olave (round 8)</p>
+    <p>Biggest prize of the four. Do not let the board hand you a fifth back. Reach
+    2RB / 2WR / 1TE <em>plus a real flex</em> before taking any fourth player at a position,
+    then take your second TE earlier than feels right. One QB is enough.</p>
+    <span class="gain">+55 pts &nbsp;·&nbsp; +3.9 / week</span>
+  </div>
+  <div class="card">
+    <h3>8-team</h3>
+    <p class="slot">Slot unknown · averaged over all 8</p>
+    <p>Any lineup-aware rule works — the three tested land inside each other's error bars.
+    Fill the lineup, take the second TE, don't take the seventh back.</p>
+    <span class="gain">+38 pts &nbsp;·&nbsp; +2.7 / week</span>
+  </div>
+  <div class="card">
+    <h3>6-team</h3>
+    <p class="slot">Pick 5 · 12-week season</p>
+    <p>Smallest stakes — waivers are deep enough to fix mistakes. Plain
+    "fill your starters first" is literally the best policy tested here.</p>
+    <span class="gain">+23 pts &nbsp;·&nbsp; +1.9 / week</span>
+  </div>
+  <div class="card">
+    <h3>32-team superflex</h3>
+    <p class="slot">Pick 4 · Puka already in</p>
+    <p>A different game. Filling your lineup happens by itself in 12 rounds; the whole edge is
+    taking scarce positions before they're gone. The one league where an aggressive early QB
+    is right — and where following ADP costs 174 points.</p>
+    <span class="gain">+41 pts &nbsp;·&nbsp; +2.9 / week</span>
+  </div>
+</div>
+
+<h2>Three things that surprised the simulator</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Caps barely help</h3>
+    <p>Bolting "max 5 RB" onto best-available gained just +9 / +4 / +1 / +2 points.
+    Capping is a rule about counting; the problem is about value.</p>
+  </div>
+  <div class="card">
+    <h3>One tight end is the real mistake</h3>
+    <p>Forcing a hard cap at each position, the board is almost flat — except
+    stopping at <strong>one TE costs ~12 points</strong> and stopping at
+    <strong>three RB costs ~8</strong>. You don't need a precise roster shape.
+    You need to stop doing the one bad thing.</p>
+  </div>
+  <div class="card">
+    <h3>Your board is not the market</h3>
+    <p>In the 12-team league ADP drafts RB3.4 / WR7.7. Your board's best-available drafts
+    RB7.9 / WR2.5 — near mirror images. Phase 13 said trust the model's <em>ordering</em>
+    of backs, not <em>how many</em>. This is the cost of not listening.</p>
+  </div>
+</div>
+
+<details>
+  <summary>Full results table</summary>
+  <table id="tbl"></table>
+</details>
+
+<footer>
+  <strong>Method.</strong> <code>src/draft_sim.py</code> — 120 drafts per policy per league from
+  your real slot, opponents on ADP + each player's own <code>adp_stdev</code>, then the regular
+  season played week by week: byes certain, injuries a Markov chain, lineup filled optimally,
+  unfillable slots streamed from the third-best undrafted player. Common random numbers across
+  policies, so differences are the policy and not the luck. Re-run at three injury levels — the
+  ordering held in all twelve runs.<br><br>
+  <strong>Caveat.</strong> Everything is measured in the board's own projections; if a projection
+  is wrong this drafts the wrong player in a well-constructed way. Optimises points, not wins.
+</footer>
+
+</div></div>
+
+<script>
+const DATA = [
+  {league:"12-team · pick 3", note:"14-week season · keeper: Olave (rd 8)", base:1481.0,
+   rows:[["marginal",1535.6,54.7],["vona",1530.4,49.4],["starters first",1505.8,24.8],
+         ["caps",1489.9,9.0],["best available",1481.0,0],["consensus ADP",1404.6,-76.4]],
+   shape:"best available drafts <b>QB2.5 RB7.9 WR2.5 TE1.1</b> — two and a half receivers for two WR slots and a flex"},
+  {league:"8-team · all slots", note:"14-week season", base:1561.9,
+   rows:[["vona",1599.6,37.6],["starters first",1594.4,32.5],["marginal",1593.8,31.8],
+         ["caps",1566.4,4.4],["best available",1561.9,0],["consensus ADP",1505.0,-57.0]],
+   shape:"best available drafts <b>QB2.0 RB7.4 WR2.5 TE2.2</b> — top three policies are inside each other's error bars"},
+  {league:"6-team · pick 5", note:"12-week season", base:1409.5,
+   rows:[["starters first",1432.5,23.0],["vona",1429.7,20.2],["marginal",1427.6,18.1],
+         ["caps",1410.2,0.7],["best available",1409.5,0],["consensus ADP",1333.3,-76.1]],
+   shape:"best available drafts <b>QB1.6 RB6.5 WR3.9 TE2.1</b> — the crude rule wins; waivers are rich enough to forgive"},
+  {league:"32-team superflex · pick 4", note:"14-week season · 12 rounds · Puka pre-drafted", base:1240.1,
+   rows:[["marginal",1280.8,40.7],["vona",1261.7,21.6],["caps",1241.6,1.5],
+         ["starters first",1241.4,1.3],["best available",1240.1,0],["consensus ADP",1066.0,-174.1]],
+   shape:"best available drafts <b>QB3.2 RB2.6 WR4.5 TE1.7</b> — filling the lineup happens anyway, so only scarcity pays"}
+];
+
+const MAXABS = 180;
+const host = document.getElementById('charts');
+DATA.forEach(d=>{
+  const p = document.createElement('div');
+  p.className = 'panel';
+  const zeroPct = 100 * MAXABS/(MAXABS*2);
+  p.innerHTML = `<h3>${d.league}</h3><p class="cap">${d.note}</p>` +
+    d.rows.map(([name,tot,delta])=>{
+      const isBase = delta===0;
+      const w = Math.abs(delta)/(MAXABS*2)*100;
+      const cls = isBase ? 'z' : (delta>0 ? 'p' : 'n');
+      const style = isBase
+        ? `left:${zeroPct}%;`
+        : (delta>0 ? `left:${zeroPct}%;width:${w}%;` : `left:${zeroPct-w}%;width:${w}%;`);
+      return `<div class="row${isBase?' base':''}" title="${name}: ${tot.toFixed(1)} season points">
+         <span class="lbl">${name}</span>
+         <span class="track"><span class="zero" style="left:${zeroPct}%"></span>
+           <span class="bar ${cls}" style="${style}"></span></span>
+         <span class="val${isBase?' dim':''}">${isBase?'baseline':(delta>0?'+':'')+delta.toFixed(1)}</span>
+       </div>`;
+    }).join('') +
+    `<p class="shape">${d.shape}</p>`;
+  host.appendChild(p);
+});
+
+const t = document.getElementById('tbl');
+t.innerHTML = '<thead><tr><th>League</th><th>Strategy</th><th>Season pts</th><th>vs best avail.</th></tr></thead><tbody>' +
+  DATA.map(d=>d.rows.map((r,i)=>
+    `<tr><td>${i===0?d.league:''}</td><td>${r[0]}</td><td>${r[1].toFixed(1)}</td><td>${r[2]===0?'—':(r[2]>0?'+':'')+r[2].toFixed(1)}</td></tr>`
+  ).join('')).join('') + '</tbody>';
+</script>
+</body>
+</html>

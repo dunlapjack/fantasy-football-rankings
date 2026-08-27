@@ -168,6 +168,13 @@ def _rmse(x, y):
     return float(np.sqrt(((x - y) ** 2).mean()))
 
 
+def _write_gate(gate):
+    GATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(GATE_PATH, "w") as fh:
+        json.dump(gate, fh, indent=2)
+    print(f"  wrote {GATE_PATH}")
+
+
 def run_gate(write=True, support_min_games=SUPPORT_MIN_GAMES):
     """
     THE RULE, and it is holdout.run_gate's rule, not a new one:
@@ -286,10 +293,7 @@ def run_gate(write=True, support_min_games=SUPPORT_MIN_GAMES):
     print(f"\n  GATE: {'PASSED' if passed else 'FAILED'}")
 
     if write:
-        GATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(GATE_PATH, "w") as fh:
-            json.dump(gate, fh, indent=2)
-        print(f"  wrote {GATE_PATH}")
+        _write_gate(gate)
     return gate
 
 
@@ -338,19 +342,38 @@ def main():
     args = parser.parse_args()
 
     write = not args.no_write
-    gate = run_gate(write=write)
+
+    # ORDERING, AND IT IS LOAD-BEARING (fixed Aug 27).
+    #
+    # `build_board.require_qb_reversion_gate` blocks the build when the
+    # MODEL is newer than the GATE, on the rule that an artifact must not
+    # postdate the validation that passed it. The first version of this
+    # function wrote the gate and then the model, which made the model
+    # newer every single time and blocked every build -- a staleness
+    # check that fired on the one case that is never stale. It shipped
+    # because the sandbox it was written in could not reach the ADP feed
+    # and so never built a board.
+    #
+    # So: score first, write the MODEL, then write the GATE last. The
+    # gate is now the newest file, which is what the check wants and what
+    # it means -- this model has been validated, and nothing has happened
+    # to it since.
+    gate = run_gate(write=False)
 
     if args.gate:
+        if write:
+            _write_gate(gate)
         return 0 if gate["passed"] else 1
 
     if not gate["passed"]:
+        if write:
+            _write_gate(gate)
         print("\nGate failed -- the model is NOT written. Nothing changes.")
         return 1
 
-    # The model file must never be newer than a passing gate, so it is
-    # written second and only on a pass. build_board enforces the same
-    # ordering from the other side.
     build(write=write)
+    if write:
+        _write_gate(gate)
     return 0
 
 

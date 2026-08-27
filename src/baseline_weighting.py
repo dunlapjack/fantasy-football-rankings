@@ -210,7 +210,9 @@ def build_scheme_comparison(target_seasons=None, schemes=None):
         baseline_seasons = [target - 3, target - 2, target - 1]
         print(f"   building {target} (baseline {baseline_seasons[0]}-{baseline_seasons[2]})...")
 
-        season_stats = aggregate_season_stats(load_veteran_stats(baseline_seasons))
+        season_stats = aggregate_season_stats(
+            load_veteran_stats(baseline_seasons, strict_overrides=False)
+        )
 
         window = (
             season_stats
@@ -223,7 +225,7 @@ def build_scheme_comparison(target_seasons=None, schemes=None):
         )
 
         actual = (
-            aggregate_season_stats(load_veteran_stats([target]))
+            aggregate_season_stats(load_veteran_stats([target], strict_overrides=False))
             .select(["player_id", "fantasy_points_per_game", "games_played"])
             .rename({
                 "fantasy_points_per_game": "actual_ppg",

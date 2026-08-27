@@ -104,7 +104,7 @@ def compute_team_position_ppg(seasons=HISTORY_SEASONS):
     Returns: season, team, position, position_points, position_ppg,
              team_games, n_players
     """
-    stats = load_veteran_stats(seasons)
+    stats = load_veteran_stats(seasons, strict_overrides=False)
 
     # nflreadpy renamed recent_team -> team; tolerate either so this doesn't
     # break on a version bump.

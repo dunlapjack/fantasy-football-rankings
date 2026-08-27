@@ -121,7 +121,25 @@ RAW_STAT_COLUMNS = [
 ]
 
 
-def load_veteran_stats(seasons):
+def load_veteran_stats(seasons, strict_overrides=True):
+    """
+    `strict_overrides` controls whether a name in position_overrides.csv
+    that matches nothing is a build failure.
+
+    It must be TRUE for the live window and FALSE for a historical one,
+    and Phase 15 found out why the hard way: `backtest.py` walks windows
+    back to 2018, and Travis Hunter -- added to the overrides file in
+    Phase 13.7 -- did not exist in the NFL before 2025. Under the old
+    unconditional strict=True, adding any current player to that file
+    broke `python -m src.backtest` for every season older than his
+    rookie year, with an error message about spelling that had nothing
+    to do with the actual problem.
+
+    The guard's purpose is unchanged where it belongs: on the live
+    window, a name matching nothing means the override did nothing and
+    the player is silently absent from the board. On a 2018 window,
+    a 2025 player matching nothing is simply the truth.
+    """
     raw = nfl.load_player_stats(seasons)
     raw = raw.filter(pl.col("season_type") == "REG")
 
@@ -134,7 +152,7 @@ def load_veteran_stats(seasons):
     # the override silently did nothing and the player stays off the board,
     # which is the failure the file exists to prevent.
     raw = position_overrides.apply(
-        raw, name_column="player_display_name", strict=True,
+        raw, name_column="player_display_name", strict=strict_overrides,
         label="veteran stats",
     )
 
@@ -344,8 +362,9 @@ def apply_baseline_shrinkage(table, k=SHRINKAGE_K, group_by=("position",),
     )
 
 
-def build_veteran_feature_table(seasons=[2023, 2024, 2025], scheme=DEFAULT_SCHEME):
-    raw = load_veteran_stats(seasons)
+def build_veteran_feature_table(seasons=[2023, 2024, 2025], scheme=DEFAULT_SCHEME,
+                                strict_overrides=True):
+    raw = load_veteran_stats(seasons, strict_overrides=strict_overrides)
     season_stats = aggregate_season_stats(raw)
     return apply_season_weighting(season_stats, scheme)
 

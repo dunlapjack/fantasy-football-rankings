@@ -171,7 +171,7 @@ def build_backtest_season(target_season):
     # `actual_games_played` below is the target season's count and
     # confusing the two would silently leak the outcome into a predictor.
     baseline = (
-        build_veteran_feature_table(baseline_seasons)
+        build_veteran_feature_table(baseline_seasons, strict_overrides=False)
         .select(["player_id", "player_name", "position", "fantasy_points_per_game",
                   "carries_per_game", "targets_per_game",
                   "games_played", "seasons_used"])
@@ -182,7 +182,7 @@ def build_backtest_season(target_season):
         })
     )
 
-    actual_raw = load_veteran_stats([target_season])
+    actual_raw = load_veteran_stats([target_season], strict_overrides=False)
     actual = (
         aggregate_season_stats(actual_raw)
         .select(["player_id", "fantasy_points_per_game", "games_played"])

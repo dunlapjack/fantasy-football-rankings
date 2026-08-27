@@ -34,28 +34,38 @@ the drivers behind the adjustment, and an ADP comparison column.
    the most recent season, scored under the league's own scoring table.
 2. **Shrinkage** — players with few games get pulled toward their position's mean, so a
    three-game sample doesn't outrank a full season.
-3. **Situational adjustment** — a fitted linear model over features the player doesn't
+3. **Quarterback mean reversion** — a QB's baseline gets 54% of its own weight and
+   the rest goes to the position mean, because quarterbacks regress far harder
+   than skill positions do. It applies only to quarterbacks with 16+ games of
+   history; a backup's small sample is a precise estimate of a different thing,
+   not a noisy estimate of a starter's, so he is left alone.
+4. **Situational adjustment** — a fitted linear model over features the player doesn't
    control: position-group competition on his own team, the team's pass/run tendency, a
    playcaller change flag, and workload share.
-4. **Rookies** — projected from a draft-slot cohort baseline (average PPG by position and
+5. **Rookies** — projected from a draft-slot cohort baseline (average PPG by position and
    draft round across the 2021–2025 rookie classes), then given the same situational
    treatment as veterans.
-5. **Replacement level and VOR** — replacement is set at the last player likely to be
+6. **Replacement level and VOR** — replacement is set at the last player likely to be
    *drafted* at each position, not the last starter, then value over replacement drives
    the final cross-position ranking.
-6. **Injury and availability** — hand-maintained overrides zero out season-enders and
+7. **Injury and availability** — hand-maintained overrides zero out season-enders and
    discount PUP/NFI players by expected games missed, denominated on that league's
    regular season.
 
 ## Validation
 
-Model changes have to survive two gates before a board will build at all. `build_board.py`
-refuses to run if either is missing, failing, or older than the weights it validates:
+Model changes have to survive three gates before a board will build at all.
+`build_board.py` refuses to run if any is missing, failing, or older than the weights it
+validates:
 
 - **Holdout gate** — the situational and rookie weights are checked against held-out
   seasons (2023, 2024, 2025 folds), not the data they were fit on.
 - **Playing-time gate** — the expected-games predictor is validated on 719 held-out
   players.
+- **QB reversion gate** — the quarterback reversion weight is validated on held-out
+  seasons, scored on actual PPG rather than delta so the `delta = actual − baseline`
+  artifact cannot manufacture the result. It is the only one of the three that moves
+  rank, so a board built on it should be diffed against the previous one.
 
 Beyond the gates, `src/compare_boards.py` diffs two boards and can assert
 `--expect rank-identical`, so a change that was supposed to leave ranking alone can be
@@ -112,6 +122,7 @@ src/
   ranking.py             applies fitted situational weights
   scoring.py             league scoring tables
   fit_weights.py         fits the situational model
+  qb_reversion.py        QB mean reversion and its gate
   fit_rookie_weights.py  fits the rookie model
   holdout.py             out-of-sample gate
   playing_time.py        expected-games model and its gate
@@ -139,9 +150,13 @@ notebooks/               exploratory analysis
 
 ## Known limitations
 
-- **Quarterbacks have no situational features and no baseline shrinkage.** A QB's
-  projection is his own trailing average and nothing else, so the model has no
-  development curve and systematically fades young quarterbacks.
+- **Quarterbacks have no situational features.** Phase 15 ran all 23 plausible
+  candidates through the holdout at QB on the full 2017–2025 window and 21 were
+  cut inside the training fold — age, experience, team tendency, playcaller
+  change, O-line continuity, position competition and QB rushing volume all
+  included. The model still has no development curve for quarterbacks. It does
+  now pull their baselines toward the position mean (see step 3 above), which is
+  the one thing that survived.
 - **Rookies who share a position/round bucket are the same player to this model.** Two
   first-round running backs get the same cohort baseline before situational adjustment.
 - **Kickers and defenses are scored, not modelled.** They get projections but none of the

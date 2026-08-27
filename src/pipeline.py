@@ -2,6 +2,7 @@ from pathlib import Path
 import polars as pl
 from src.features import (
     apply_baseline_shrinkage,
+    apply_qb_reversion,
     attach_current_team,
     build_veteran_feature_table,
 )
@@ -47,6 +48,16 @@ def build_player_feature_table(output_path=DEFAULT_OUTPUT_PATH):
     full_table = apply_baseline_shrinkage(
         full_table, exclude=pl.col("is_rookie")
     )
+
+    # Phase 15b. AFTER shrinkage, because shrinkage leaves quarterbacks
+    # untouched (QB is in SHRINKAGE_EXCLUDED_POSITIONS) and this
+    # overwrites the columns it left at their pass-through values. Before
+    # the weights, for the same reason shrinkage is: QB carries no
+    # situational weights today, but if it ever does they must sit on top
+    # of the baseline they were fitted against.
+    #
+    # No-op when data/qb_reversion.json is absent, which reproduces v17.
+    full_table = apply_qb_reversion(full_table)
 
     full_table = attach_adp(full_table)
 

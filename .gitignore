@@ -267,6 +267,18 @@ data/*
 !data/playing_time.json
 !data/playing_time_gate.json
 
+# Phase 15b. The QB mean-reversion model and ITS OWN gate, paired for
+# the same reason as every pair above -- `build_board.require_qb_
+# reversion_gate` refuses to build if the model is present without a
+# passing gate newer than it.
+#
+# Tracked with more reason than the others, not less: unlike playing
+# time, this one moves rank. A board built from it is a different board,
+# and the two files are the record of exactly which quarterback
+# adjustment produced it.
+!data/qb_reversion.json
+!data/qb_reversion_gate.json
+
 # Draft boards are build artifacts now that src/build_board.py exists.
 # Binary, useless diffs, and regenerable on demand -- delete old versions
 # freely. Recover any previously committed one with:

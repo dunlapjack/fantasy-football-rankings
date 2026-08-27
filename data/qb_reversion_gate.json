@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "position": "QB",
+  "support_min_games": 16,
+  "folds": [
+    {
+      "season": 2023,
+      "n_test": 31,
+      "n_reverted": 23,
+      "n_untouched": 8,
+      "w": 0.5457011796489865,
+      "anchor": 19.055402586352812,
+      "rmse_raw": 5.454462589701077,
+      "rmse_reverted": 5.503127560905926,
+      "gain": -0.04866497120484947
+    },
+    {
+      "season": 2024,
+      "n_test": 34,
+      "n_reverted": 29,
+      "n_untouched": 5,
+      "w": 0.5300453330455588,
+      "anchor": 19.05909764333625,
+      "rmse_raw": 4.787776114022927,
+      "rmse_reverted": 4.4341537435244796,
+      "gain": 0.3536223704984476
+    },
+    {
+      "season": 2025,
+      "n_test": 31,
+      "n_reverted": 28,
+      "n_untouched": 3,
+      "w": 0.5549765579445375,
+      "anchor": 18.870488725353397,
+      "rmse_raw": 4.291970683510746,
+      "rmse_reverted": 3.7247960239376026,
+      "gain": 0.5671746595731433
+    }
+  ],
+  "n_held_out": 96,
+  "pooled_rmse_raw": 4.865602708918946,
+  "pooled_rmse_reverted": 4.606847857898462,
+  "pooled_gain": 0.258754851020484,
+  "w_spread_across_folds": 0.0249312248989787,
+  "w_stable": true,
+  "scored_on": "actual_ppg, held-out season, MIN_GAMES=8 population",
+  "rule": "Pooled by test-set size (holdout.run_gate's arithmetic), the reverted baseline must beat the raw baseline on held-out actual_ppg, AND w must be stable across folds (<0.10 spread). Scored on actual_ppg rather than delta so the delta = actual - baseline artifact cannot produce the result.",
+  "note": "This is NOT holdout.py's gate and NOT playing_time.py's. holdout.py tests feature ablation on the veteran and rookie models and knows nothing about this file. Unlike the playing-time model, this one MOVES RANK -- diff with compare_boards.py before drafting from a board built on it.",
+  "generated_utc": "2026-08-27T05:28:36.869572+00:00"
+}

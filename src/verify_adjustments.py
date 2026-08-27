@@ -422,6 +422,80 @@ def check_shrunk_baseline(check):
               f"(median raw {median_raw:.2f} PPG -- below the anchor by design)")
 
 
+def check_qb_reversion(check):
+    """
+    Phase 15b. Two invariants, checked on the built table rather than
+    trusted from the code that wrote it.
+
+    The first is the Phase 11 CP5 protection and it is the only thing
+    standing between this model and the failure CP5 rejected: a
+    quarterback whose baseline rests on fewer than `support_min_games`
+    must be left EXACTLY as he was. If that ever stops being true, backup
+    quarterbacks start getting pulled toward a starter's mean and appear
+    on the board as steals.
+
+    The second is arithmetic: for every quarterback who WAS reverted, the
+    shrunk baseline has to equal w * raw + (1 - w) * anchor. A mismatch
+    means the board is carrying a number no fitted model produced.
+    """
+    print("\n7. QB REVERSION  --  is the support guard actually holding?")
+
+    model_path = PROJECT_ROOT / "data" / "qb_reversion.json"
+    if not model_path.exists():
+        check.soft(True, "no qb_reversion.json -- quarterbacks keep raw baselines")
+        return
+    if not PLAYER_FEATURES_PATH.exists():
+        check.soft(False, "player_features.csv exists")
+        return
+
+    with open(model_path) as fh:
+        model = json.load(fh)
+    w = float(model["w"])
+    anchor = float(model["anchor_ppg"])
+    guard = float(model["support_min_games"])
+
+    df = pl.read_csv(PLAYER_FEATURES_PATH).filter(pl.col("position") == "QB")
+    if "is_rookie" in df.columns:
+        df = df.filter(~pl.col("is_rookie").cast(pl.Boolean).fill_null(False))
+    if df.height == 0:
+        check.soft(False, "player_features.csv carries quarterbacks")
+        return
+
+    thin = df.filter(pl.col("games_played").cast(pl.Float64) < guard)
+    if thin.height:
+        worst = thin.select(
+            (pl.col("fantasy_points_per_game_shrunk")
+             - pl.col("fantasy_points_per_game")).abs().max()
+        ).item()
+        check.hard(worst < 1e-9,
+                   f"quarterbacks under {guard:.0f} games are untouched "
+                   f"(n={thin.height})",
+                   f"worst deviation {worst:.2e} -- this is the CP5 failure")
+    else:
+        check.soft(True, f"no quarterbacks under {guard:.0f} games to check")
+
+    thick = df.filter(pl.col("games_played").cast(pl.Float64) >= guard)
+    if thick.height:
+        worst = thick.select(
+            (pl.col("fantasy_points_per_game_shrunk")
+             - (w * pl.col("fantasy_points_per_game") + (1 - w) * anchor)).abs().max()
+        ).item()
+        check.hard(worst < 1e-6,
+                   f"reverted quarterbacks match w*raw + (1-w)*anchor "
+                   f"(n={thick.height})",
+                   f"worst gap {worst:.2e}")
+        moved_up = thick.filter(
+            pl.col("fantasy_points_per_game_shrunk")
+            > pl.col("fantasy_points_per_game") + 1e-9
+        ).height
+        print(f"   note: {moved_up} of {thick.height} reverted quarterbacks moved "
+              f"UP toward the {anchor:.1f} PPG anchor. Expected -- every "
+              f"quarterback below the anchor does. The guard's job is to keep "
+              f"THIN quarterbacks out of that set, not to stop it happening.")
+    else:
+        check.soft(False, f"any quarterback at or above {guard:.0f} games")
+
+
 def check_value_drivers(check):
     """
     Phase 11. The "Why (value drivers)" column claims to be the model's own
@@ -705,6 +779,7 @@ def main():
         check_value_drivers(check)
         check_replacement_levels(check)
         check_shrunk_baseline(check)
+        check_qb_reversion(check)
 
     print("\n" + "=" * 74)
     if check.failures:

@@ -824,6 +824,7 @@ def require_holdout_gate(skip=False):
 
     print(f"Holdout gate: PASSED (folds {gate.get('seasons')})")
     require_playing_time_gate(skip=skip)
+    require_qb_reversion_gate(skip=skip)
 
 
 PLAYING_TIME_PATH = PROJECT_ROOT / "data" / "playing_time.json"
@@ -882,6 +883,63 @@ def require_playing_time_gate(skip=False):
     ship = pt_gate.get("ship", "?")
     print(f"Playing-time gate: PASSED (ships predictor {ship}, "
           f"n={pt_gate.get('n_held_out')})")
+
+
+QB_REVERSION_PATH = PROJECT_ROOT / "data" / "qb_reversion.json"
+QB_REVERSION_GATE_PATH = PROJECT_ROOT / "data" / "qb_reversion_gate.json"
+
+
+def require_qb_reversion_gate(skip=False):
+    """
+    The same three checks again, for the Phase 15b model.
+
+    ABSENT IS ALLOWED, as with playing time: no qb_reversion.json means
+    quarterbacks keep their raw trailing average, which is v17 and every
+    board before it.
+
+    THE DIFFERENCE WORTH STATING. The playing-time model cannot move a
+    rank -- it only touches expected_games. This one CAN and does:
+    compressing the quarterback spread lifts the replacement QB and
+    lowers the elite ones, which changes VOR across every position. So a
+    stale or failed gate here is not a cosmetic problem, and the reminder
+    to diff belongs where the build happens rather than only in a
+    docstring nobody opens on draft night.
+    """
+    if skip or not QB_REVERSION_PATH.exists():
+        return
+
+    if not QB_REVERSION_GATE_PATH.exists():
+        raise SystemExit(
+            f"\nBUILD BLOCKED: {QB_REVERSION_PATH.name} exists but "
+            f"{QB_REVERSION_GATE_PATH.name} does not.\n"
+            f"QB mean reversion has never been validated out of sample, and "
+            f"it moves rank.\n\n"
+            f"Run:  python -m src.qb_reversion --gate\n"
+        )
+
+    if QB_REVERSION_PATH.stat().st_mtime > QB_REVERSION_GATE_PATH.stat().st_mtime:
+        raise SystemExit(
+            f"\nBUILD BLOCKED: {QB_REVERSION_PATH.name} is NEWER than its "
+            f"gate.\nThe reversion model has been refitted since it was last "
+            f"validated.\n\n"
+            f"Run:  python -m src.qb_reversion --gate\n"
+        )
+
+    with open(QB_REVERSION_GATE_PATH) as f:
+        qb_gate = json.load(f)
+
+    if not qb_gate.get("passed"):
+        raise SystemExit(
+            f"\nBUILD BLOCKED: the QB reversion gate failed.\n"
+            f"Delete {QB_REVERSION_PATH.name} to build without it, or fix "
+            f"the model.\n"
+        )
+
+    print(f"QB reversion gate: PASSED (pooled gain "
+          f"{qb_gate.get('pooled_gain', 0):+.4f} RMSE over "
+          f"{qb_gate.get('n_held_out')} held-out quarterbacks, guard "
+          f"{qb_gate.get('support_min_games')} games) -- THIS MOVES RANK, "
+          f"diff with compare_boards.py before drafting")
 
 
 def rescore_for_league(players, config, base_config_path=CONFIG_PATH):

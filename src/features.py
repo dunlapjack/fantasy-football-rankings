@@ -1,3 +1,5 @@
+import json
+
 import polars as pl
 import nflreadpy as nfl
 from src.scoring import load_config, calculate_offensive_points
@@ -360,6 +362,91 @@ def apply_baseline_shrinkage(table, k=SHRINKAGE_K, group_by=("position",),
          + (1 - pl.col("baseline_confidence")) * pl.col("baseline_anchor_ppg"))
         .alias(f"{value_column}_shrunk")
     )
+
+
+QB_REVERSION_PATH = Path(__file__).resolve().parent.parent / "data" / "qb_reversion.json"
+
+
+def load_qb_reversion(path=QB_REVERSION_PATH):
+    """Returns the fitted QB reversion model, or None if it isn't there.
+
+    ABSENT IS ALLOWED. A pipeline with no qb_reversion.json produces
+    exactly the v17 board: quarterbacks keep their raw trailing average.
+    `build_board.require_qb_reversion_gate` blocks the other two cases --
+    a model with no gate, or a model newer than the gate that passed it.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def apply_qb_reversion(table, model=None, value_column="fantasy_points_per_game",
+                       games_column="games_played"):
+    """
+    Phase 15b. Pulls a quarterback's baseline toward the position mean.
+
+    Runs AFTER `apply_baseline_shrinkage`, which leaves quarterbacks
+    untouched (QB is in SHRINKAGE_EXCLUDED_POSITIONS) at confidence 1.0
+    and a shrunk column equal to the raw one. This overwrites those three
+    columns for quarterbacks that clear the support guard, so everything
+    downstream -- ranking, VOR, the board -- reads the reverted number
+    without knowing anything changed.
+
+    WHAT IT DOES NOT TOUCH, and the list is the point:
+
+      * quarterbacks with fewer than `support_min_games` of history. They
+        keep the raw baseline and confidence 1.0. This is the Phase 11
+        CP5 protection: a backup's small sample is a precise estimate of
+        a different quantity, not a noisy estimate of a starter's, and
+        pulling him toward a starter's mean is how CP5 got 59% of
+        quarterbacks moving UP. See src/qb_reversion.py.
+      * rookies, at any position. Their baseline is a cohort projection
+        and `games_played` describes a college career this model never
+        saw -- the same reason pipeline.py excludes them from shrinkage.
+      * every other position.
+
+    Unlike the availability machinery, this DOES move rank: compressing
+    the QB spread lifts the replacement quarterback and lowers the elite
+    ones, which changes VOR across positions.
+    """
+    model = load_qb_reversion() if model is None else model
+    if model is None or value_column not in table.columns:
+        return table
+
+    w = float(model["w"])
+    anchor = float(model["anchor_ppg"])
+    guard = float(model["support_min_games"])
+    shrunk_column = f"{value_column}_shrunk"
+
+    is_rookie = (
+        pl.col("is_rookie") if "is_rookie" in table.columns else pl.lit(False)
+    )
+    eligible = (
+        (pl.col("position") == model.get("position", "QB"))
+        & (pl.col(games_column).cast(pl.Float64).fill_null(0.0) >= guard)
+        & ~is_rookie.fill_null(False)
+        & pl.col(value_column).is_not_null()
+    )
+
+    reverted = w * pl.col(value_column) + (1 - w) * pl.lit(anchor)
+
+    table = table.with_columns([
+        pl.when(eligible).then(pl.lit(w))
+          .otherwise(pl.col("baseline_confidence")).alias("baseline_confidence"),
+        pl.when(eligible).then(pl.lit(anchor))
+          .otherwise(pl.col("baseline_anchor_ppg")).alias("baseline_anchor_ppg"),
+    ])
+    if shrunk_column in table.columns:
+        table = table.with_columns(
+            pl.when(eligible).then(reverted)
+              .otherwise(pl.col(shrunk_column)).alias(shrunk_column)
+        )
+    n = table.filter(eligible).height
+    print(f"QB reversion: {n} quarterbacks reverted "
+          f"(w={w:.3f} toward {anchor:.2f} PPG, guard {guard:.0f} games)")
+    return table
 
 
 def build_veteran_feature_table(seasons=[2023, 2024, 2025], scheme=DEFAULT_SCHEME,

@@ -20,10 +20,10 @@ its own board.
 
 | Board | League | Config |
 |---|---|---|
-| `2026_6Team_Board_v17.xlsx` | 6-team full PPR, redraft | `league_config_6team.json` |
-| `2026_8Team_Board_v17.xlsx` | 8-team full PPR, redraft | `league_config_8team.json` |
-| `2026_12Team_Board_v17.xlsx` | 12-team full PPR, keepers | `league_config_12team.json` |
-| `2026_32Team_Board_v17.xlsx` | 32-team superflex PPR | `league_config_32team.json` |
+| `2026_6Team_Board_v18.xlsx` | 6-team full PPR, redraft | `league_config_6team.json` |
+| `2026_8Team_Board_v18.xlsx` | 8-team full PPR, redraft | `league_config_8team.json` |
+| `2026_12Team_Board_v18.xlsx` | 12-team full PPR, keepers | `league_config_12team.json` |
+| `2026_32Team_Board_v18.xlsx` | 32-team superflex PPR | `league_config_32team.json` |
 
 Each board carries per-player projected points per game, value over replacement, a rank,
 the drivers behind the adjustment, and an ADP comparison column.
@@ -102,7 +102,7 @@ pip install -r requirements.txt
 python -m src.pipeline
 
 # Build a board
-python -m src.build_board --config league_config_12team.json --version 17 --note "first build"
+python -m src.build_board --config league_config_12team.json --version 18 --note "first build"
 ```
 
 To use your own league, copy one of the `league_config_*.json` files and edit

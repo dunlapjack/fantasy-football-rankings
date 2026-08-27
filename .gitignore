@@ -305,6 +305,7 @@ COMMIT_MSG.txt
 2026_*_Board_v14.xlsx
 2026_*_Board_v15.xlsx
 2026_*_Board_v16.xlsx
+2026_*_Board_v17.xlsx
 
 # One line per version, deliberately, rather than a range like v1[0-9].
 # A range would swallow the CURRENT board the moment the version counter

@@ -1,19 +1,19 @@
 {
-    "league_name": "12-Team Full PPR",
-    "config_key": "lebron_james",
-    "board_label": "12Team",
-    "num_teams": 12,
-    "draft_slot": 3,
+    "league_name": "6-Team Full PPR",
+    "config_key": "6_team_ppr",
+    "board_label": "6Team",
+    "num_teams": 6,
+    "draft_slot": 5,
     "total_rounds": 16,
     "regular_season_weeks": [
         1,
-        14
+        12
     ],
     "playoff_weeks": [
-        15,
-        17
+        13,
+        14
     ],
-    "fantasy_season_length": 14,
+    "fantasy_season_length": 12,
     "roster_slots": {
         "QB": 1,
         "RB": 2,
@@ -22,7 +22,7 @@
         "FLEX": 1,
         "K": 1,
         "DST": 1,
-        "Bench": 8
+        "Bench": 7
     },
     "scoring": {
         "pass_yard": 0.04,
@@ -35,8 +35,6 @@
         "rec_td": 6,
         "fumble_lost": -2,
         "two_point_conversion": 2,
-        "40+_yard_td_bonus": 1,
-        "50+_yard_td_bonus": 2,
         "kickoff_return_td": 6,
         "punt_return_td": 6,
         "fumble_recover_td": 6,
@@ -57,9 +55,5 @@
             "200-299": 2
         }
     },
-    "keeper_rule": {
-        "cost_if_drafted_last_year": "same round drafted",
-        "cost_if_kept_multiple_in_a_row": "round 1",
-        "cost_if_undrafted_last_year": "no pick lost"
-    }
+    "keeper_rule": null
 }

@@ -5,7 +5,7 @@ from src.scoring import load_config, calculate_offensive_points
 from src.team_codes import normalize_team_column
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
+CONFIG_PATH = PROJECT_ROOT / "league_config_12team.json"
 
 OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
 COHORT_SEASONS = [2021, 2022, 2023, 2024, 2025]

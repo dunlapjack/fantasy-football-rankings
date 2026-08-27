@@ -54,8 +54,8 @@ from src.ranking import load_rookie_weights, load_situational_weights
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 BOARDS = {
-    "12-team": PROJECT_ROOT / "league_config_lebronjames.json",
-    "6-team": PROJECT_ROOT / "league_config_dunlap.json",
+    "12-team": PROJECT_ROOT / "league_config_12team.json",
+    "6-team": PROJECT_ROOT / "league_config_6team.json",
     "32-team SF": PROJECT_ROOT / "league_config_32team.json",
 }
 

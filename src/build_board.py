@@ -16,11 +16,11 @@ and draft-target text all reproduce v7 given v7's inputs.
 
 USAGE
 -----
-    # Lebron James (12 team) -- writes 2026_LebronJames_Board_v9.xlsx
+    # 12-team league -- writes 2026_12Team_Board_v9.xlsx
     python -m src.build_board
 
-    # Dunlap Family (6 team) -- writes 2026_DunlapFamily_Board_v9.xlsx
-    python -m src.build_board --config league_config_dunlap.json
+    # 6-team league -- writes 2026_6Team_Board_v9.xlsx
+    python -m src.build_board --config league_config_6team.json
 
     python -m src.build_board --note "refreshed ADP"
     python -m src.build_board --output some/path.xlsx
@@ -59,7 +59,7 @@ from src.playing_time import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FEATURES_PATH = PROJECT_ROOT / "data" / "player_features.csv"
-CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
+CONFIG_PATH = PROJECT_ROOT / "league_config_12team.json"
 
 # MODEL_VERSION bumps when the model changes -- new weights, new features,
 # a refit. It does NOT bump for a data refresh (new ADP pull, updated injury
@@ -87,7 +87,7 @@ CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
 #
 # It nearly didn't. Phase 12 was built alongside a new league, and the
 # attention was on that league -- but `ranking.apply_situational_weights`
-# is shared, so Lebron James and Dunlap Family both changed the moment
+# is shared, so the 12-team and 6-team boards both changed the moment
 # rookie_weights.json appeared. A board whose numbers moved while its
 # version stayed put is the exact problem the Build History sheet was
 # added to solve, one level up: there, three rebuilds of one version; here,
@@ -338,8 +338,8 @@ COLUMNS = [
     # Exp Pts is Adj PPG x Exp Gm. Adj PPG stays an honest per-game rate,
     # so Kittle does not move in the Rank column -- the cost of missing
     # September shows up here instead, and it is genuinely a different
-    # number in each league (12-game regular season in Dunlap, 14 in
-    # Lebron James), which no single rank column could express.
+    # number in each league (12-game regular season in the 6-team
+    # league, 14 in the 12-team), which no single rank column could express.
     ("Exp Gm", 8), ("Exp Pts", 9),
     # -- 4. AUDIT ------------------------------------------------------
     ("Sit Adj", 8), ("Rook", 6),
@@ -584,12 +584,12 @@ def compute_expected_points(players, config):
     `expected_games` is this LEAGUE'S regular season minus known absence,
     and the denominator is the regular season on purpose -- not the
     17-week NFL calendar. Weeks 15-17 are worth nothing in a league whose
-    final is week 14, and nothing at all in Dunlap, whose season ends in
+    final is week 14, and nothing at all in the 6-team league, whose season ends in
     week 12. Those are the games that decide whether you reach the
     playoffs at all.
 
     That is why the same four-game PUP absence costs 4/12 = 33% of a
-    Dunlap season against 4/14 = 29% of a Lebron James one, and why the
+    6-team season against 4/14 = 29% of a 12-team one, and why the
     same player is honestly worth different amounts in the two leagues --
     something the board has never had to express before.
 
@@ -891,7 +891,7 @@ def rescore_for_league(players, config, base_config_path=CONFIG_PATH):
     THE BUG THIS FIXES (Aug 6)
     --------------------------
     `fantasy_points_per_game` is computed once, in features.py, under one
-    config -- league_config_lebronjames.json. That was invisible while
+    config -- league_config_12team.json. That was invisible while
     both leagues used identical scoring blocks. They did: the 12-team and
     6-team configs differ in teams, weeks, and keepers, and in nothing
     that touches a point value.
@@ -1251,7 +1251,7 @@ def compute_replacement_ranks(config, players):
 
     Sanity condition from the plan: the 6-team board must push QB and TE
     DOWN relative to the 12-team board. It does. Josh Allen goes from 7th
-    to 15th on Dunlap while rising to 7th on Lebron James, and the
+    to 15th on the 6-team board while rising to 7th on the 12-team, and the
     quarterbacks inside the top 30 go 4 -> 1 on the shallow board and
     1 -> 4 on the deep one.
     """
@@ -2144,9 +2144,9 @@ def build_board(features_path=FEATURES_PATH, output_path=None,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build the 2026 Excel draft board.")
     parser.add_argument("--config", type=str, default=str(CONFIG_PATH),
-                        help="league config json (default: league_config_lebronjames.json, "
-                             "i.e. Lebron James). Use league_config_dunlap.json "
-                             "for the 6-team Dunlap Family board.")
+                        help="league config json (default: league_config_12team.json, "
+                             "i.e. the 12-team league). Use league_config_6team.json "
+                             "for the 6-team board.")
     parser.add_argument("--version", type=int, default=MODEL_VERSION,
                         help="model version for the output filename; bump only "
                              "when the MODEL changes, not for a data refresh")

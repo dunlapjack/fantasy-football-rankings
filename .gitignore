@@ -304,3 +304,14 @@ COMMIT_MSG.txt
 # current one, and it is recomputed from the board's Adj PPG on every
 # rebuild (see BUILD_RUNBOOK.md step 3).
 QB59_stress_test.xlsx
+
+# Personal draft boards -- local copies used for live drafts, not part of the project
+Sleeper_*.xlsx
+UFFL_Mock_*.xlsx
+
+# Local scratch
+COMMIT_MSG*.txt
+*.backup.csv
+
+# Local working config (personal league name / draft slot)
+league_config.json

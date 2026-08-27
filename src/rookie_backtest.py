@@ -119,7 +119,7 @@ from src.backtest import (
 from src.fit_rookie_weights import SEASON_CONFOUND_SPREAD
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "league_config_lebronjames.json"
+CONFIG_PATH = PROJECT_ROOT / "league_config_12team.json"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "rookie_backtest_features.csv"
 
 # WIDENED 2021-2025 -> 2017-2025 (Aug 6), matching backtest.py.

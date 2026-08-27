@@ -516,8 +516,8 @@ def check_replacement_levels(check):
     )
 
     configs = {
-        "Lebron James (12)": PROJECT_ROOT / "league_config_lebronjames.json",
-        "Dunlap Family (6)": PROJECT_ROOT / "league_config_dunlap.json",
+        "12-team": PROJECT_ROOT / "league_config_12team.json",
+        "6-team": PROJECT_ROOT / "league_config_6team.json",
         "32-Team Superflex": PROJECT_ROOT / "league_config_32team.json",
     }
     if not all(path.exists() for path in configs.values()):
@@ -620,8 +620,8 @@ def check_replacement_levels(check):
     # `deep, shallow = list(configs.keys())`, which is correct for exactly
     # two configs and raises ValueError on the third. Adding a league
     # should not break a check about the other two.
-    deep = "Lebron James (12)"
-    shallow = "Dunlap Family (6)"
+    deep = "12-team"
+    shallow = "6-team"
     superflex = "32-Team Superflex"
 
     for position in ("QB", "TE"):

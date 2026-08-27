@@ -54,8 +54,8 @@ python -m src.pipeline
 python -m src.mock_adp     # 32-team only; see below
 
 python -m src.build_board --config league_config_32team.json      --version 17 --note "pre-draft refresh"
-python -m src.build_board --config league_config_lebronjames.json --version 17 --note "pre-draft refresh"
-python -m src.build_board --config league_config_dunlap.json      --version 17 --note "pre-draft refresh"
+python -m src.build_board --config league_config_12team.json --version 17 --note "pre-draft refresh"
+python -m src.build_board --config league_config_6team.json      --version 17 --note "pre-draft refresh"
 python -m src.build_board --config league_config_8team.json       --version 17 --note "pre-draft refresh"
 ```
 

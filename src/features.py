@@ -7,7 +7,7 @@ from pathlib import Path
 from src.team_codes import normalize_team_column
 from src import position_overrides
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config_lebronjames.json"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "league_config_12team.json"
 
 RECENCY_WEIGHTS = [0.5, 0.3, 0.2]  # most-recent-first; applies to any 3-year window
 OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]

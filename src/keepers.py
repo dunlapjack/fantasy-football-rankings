@@ -48,7 +48,7 @@ def load_keeper_history(path=KEEPER_HISTORY_PATH):
 
 def compute_keeper_round(keepers):
     """
-    Applies the league's keeper cost rule (league_config_lebronjames.json ->
+    Applies the league's keeper cost rule (league_config_12team.json ->
     keeper_rule):
       - draft_round_last_year is null (undrafted / waiver add last
         year) -> free, no round cost

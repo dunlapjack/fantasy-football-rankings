@@ -90,7 +90,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------
 LEAGUES = {
     "12team": {
-        "config": "league_config_lebronjames.json",
+        "config": "league_config_12team.json",
         "board": "2026_12Team_Board_v17.xlsx",
         "slot": 3,
         "keepers": ["Chris Olave"],
@@ -107,7 +107,7 @@ LEAGUES = {
         "predrafted": {},
     },
     "6team": {
-        "config": "league_config_dunlap.json",
+        "config": "league_config_6team.json",
         "board": "2026_6Team_Board_v17.xlsx",
         "slot": 5,
         "keepers": [], "keeper_rounds_forfeited": [], "gone": [],

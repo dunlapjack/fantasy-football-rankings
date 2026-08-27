@@ -41,8 +41,8 @@ FEATURES_PATH = PROJECT_ROOT / "data" / "player_features.csv"
 SWEEP_PATH = PROJECT_ROOT / "data" / "shrinkage_sweep.csv"
 SCHEMES_PATH = PROJECT_ROOT / "data" / "baseline_scheme_comparison.csv"
 CONFIGS = [
-    ("12-team", PROJECT_ROOT / "league_config_lebronjames.json", "#1565C0"),
-    ("6-team", PROJECT_ROOT / "league_config_dunlap.json", "#C62828"),
+    ("12-team", PROJECT_ROOT / "league_config_12team.json", "#1565C0"),
+    ("6-team", PROJECT_ROOT / "league_config_6team.json", "#C62828"),
     ("32-team SF", PROJECT_ROOT / "league_config_32team.json", "#2E7D32"),
 ]
 

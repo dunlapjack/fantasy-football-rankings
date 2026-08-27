@@ -1,6 +1,6 @@
 import json
 
-def load_config(path="league_config_lebronjames.json"):
+def load_config(path="league_config_12team.json"):
     with open(path) as f:
         return json.load(f)
 

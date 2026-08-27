@@ -6,7 +6,7 @@ adjustments trustworthy rather than just present.
 
 Ground rules carried over unchanged: statistics only, no analyst opinions, ADP is a
 reference column and never a model input. League rules unchanged from Phase 7
-(12-team full PPR, 6-pt pass TD, 16 rounds, keeper rules per `league_config_lebronjames.json`).
+(12-team full PPR, 6-pt pass TD, 16 rounds, keeper rules per `league_config_12team.json`).
 
 ---
 
@@ -47,10 +47,10 @@ ranks 4–5. Phase 12 addresses the second half.
 
 **Revised Aug 3.** Two changes landed the same day.
 
-**A second draft was added.** The Dunlap Family Fantasy Football league drafts first,
+**A second draft was added.** The 6-team league drafts first,
 so the finished board is needed by **August 22**, not August 29. That league is 6 teams,
 no keepers, regular season weeks 1–12 with playoffs in weeks 13–14 — scoring and roster
-slots otherwise identical to Lebron James. It gets its own `league_config_dunlap.json`,
+slots otherwise identical to the 12-team league. It gets its own `league_config_6team.json`,
 and both boards ship from the same model.
 
 **Phase 9 was cut.** Validation killed it before it shipped (see below). That returns
@@ -196,7 +196,7 @@ QB swings from worst position to best as the filter tightens, roughly triple RB'
 movement, because quarterback is one-per-team: a mediocre receiver still plays eight
 games, a mediocre quarterback is benched. So +0.70 means "quarterbacks who keep their
 job beat their baseline" — unknowable on draft day. Applied uniformly it lifted every QB
-against every other position and put Josh Allen in the Lebron James top 10.
+against every other position and put Josh Allen in the 12-team top 10.
 
 `fit_weights.SUPPRESS_LEVEL_SHIFT` removes the level and keeps the slope: a 24-year-old
 QB still gets +1.04 and a 36-year-old −1.31, spread identical (sd 0.983 either way),
@@ -227,7 +227,7 @@ across three phases.
 (p=0.85). Both boards rebuilt at v10. Top-30 movement is modest and legible: largest
 top-30 moves are Ashton Jeanty +18, Tucker Kraft +15, Bucky Irving +8 (trend +19.5 pp
 per season). The largest moves anywhere are veterans whose usage collapsed — Nick
-Chubb −222 (trend −26.3), Austin Ekeler −322 on the Dunlap board (trend −29.7).
+Chubb −222 (trend −26.3), Austin Ekeler −322 on the 6-team board (trend −29.7).
 
 **Three bugs found while verifying, not while building.** All three are the Phase 6
 error in different costumes — a coefficient separated from the constants it was
@@ -360,12 +360,12 @@ them.
 
 ### Phase 11 — Baseline confidence, injuries, and PUP (Aug 8–12)
 
-**Expanded, and the reason matters.** The Dunlap league's regular season is weeks 1–12
+**Expanded, and the reason matters.** The 6-team league's regular season is weeks 1–12
 with playoffs in 13–14, so the fantasy-relevant season is 12 games, not 17. Every
 games-available calculation in this phase is now league-dependent: a four-game PUP
-absence costs 4/12 = 33% of that league's season against 4/14 = 29% of Lebron James's
+absence costs 4/12 = 33% of that league's season against 4/14 = 29% of the 12-team's
 (weeks 1–14, playoffs 15–17). Kittle and Charbonnet should be ranked lower on the
-Dunlap board than on the other one — the same player is worth different amounts in the
+6-team board than on the other one — the same player is worth different amounts in the
 two leagues, and the board has never had to express that before.
 
 Every haircut below therefore reads `fantasy_season_length` from the league config
@@ -508,11 +508,11 @@ anything downstream. This needs a separate signal.
 **C. Replacement level in shallow leagues.** Found while verifying the first v9 boards.
 `compute_replacement_ranks()` sets replacement at the last *starter* — QB12 in a
 12-team league, so QB6 in a 6-team one. That's wrong the shallower the league gets. In
-the Dunlap league QB7 through QB32 are all sitting on waivers, so the real fallback is
+the 6-team league QB7 through QB32 are all sitting on waivers, so the real fallback is
 a perfectly good starting quarterback, not the worst rostered one.
 
-The visible symptom: Josh Allen ranks 10th on the Lebron James board and **5th** on
-Dunlap; Brock Bowers 16th and **10th**; Trevor Lawrence 97th and **71st**. The math is
+The visible symptom: Josh Allen ranks 10th on the 12-team board and **5th** on the
+6-team; Brock Bowers 16th and **10th**; Trevor Lawrence 97th and **71st**. The math is
 internally consistent — RB/WR replacement climbs from rank 29 to 14, a 15-spot jump up
 a steep part of the curve, while QB moves only 12 → 6, so skill positions shed more VOR
 and QBs float up by comparison. But the conclusion is backwards from how a 6-team
@@ -536,7 +536,7 @@ ADP 108) and Zach Charbonnet (torn ACL, 10.44, ADP 143) both show at full value 
 - **CP8** — Add a partial games-available haircut for `PUP` and `NFI` rather than the
   current all-or-nothing treatment. Scale the projection by expected share of the
   season available, using each league's `fantasy_season_length` — so a 4-game absence
-  costs roughly 4/14 in Lebron James and 4/12 in Dunlap Family.
+  costs roughly 4/14 in the 12-team league and 4/12 in the 6-team.
 - **Open question:** whether the haircut should hit `adjusted_fantasy_points_per_game`
   (changes VOR and rank) or only a separate "expected total points" column (leaves PPG
   honest). PPG and season-long value diverge here for the first time in the project.
@@ -558,13 +558,13 @@ new levels print side by side.
 
 | League | Old (starters) | New (drafted) |
 |---|---|---|
-| Lebron James (12) | QB12 / RB29 / WR29 / TE14 | QB22 / RB51 / WR74 / TE21 |
-| Dunlap Family (6) | QB6 / RB14 / WR14 / TE7 | QB8 / RB32 / WR38 / TE6 |
+| 12-team | QB12 / RB29 / WR29 / TE14 | QB22 / RB51 / WR74 / TE21 |
+| 6-team | QB6 / RB14 / WR14 / TE7 | QB8 / RB32 / WR38 / TE6 |
 
 **CP7 — the sanity condition holds, and it is now a test rather than a
 reading.** Quarterbacks inside the top 30 go 1 → 4 on the 12-team board and
-4 → 1 on the 6-team one; Josh Allen goes 11th → 7th on Lebron James and 7th →
-15th on Dunlap. Trey McBride is the only tight end left in either top 30.
+4 → 1 on the 6-team one; Josh Allen goes 11th → 7th on the 12-team board and 7th →
+15th on the 6-team. Trey McBride is the only tight end left in either top 30.
 `verify_adjustments.py` gained `check_replacement_levels()`, which rebuilds
 both boards and hard-fails if the best QB or TE ever ranks *higher* in the
 shallow league than the deep one. That assertion is the actual deliverable —
@@ -592,7 +592,7 @@ in `injury_overrides.csv`. **Kittle is the row to revisit:** four games is
 almost certainly generous for a torn Achilles, and the column is empty for him.
 
 The league-dependence the phase intro demanded now exists: the same four-game
-absence costs 4/12 in Dunlap and 4/14 in Lebron James, read from
+absence costs 4/12 in the 6-team league and 4/14 in the 12-team, read from
 `fantasy_season_length`, denominated on the REGULAR season.
 
 **Also shipped: the "Why (value drivers)" column.** Each player carries a
@@ -933,9 +933,9 @@ Four things broke or would have, none of them loudly:
    `SUPERFLEX` slot being ignored.
 4. **Scoring was computed once, for one league.** See below. This is the serious one.
 
-### Every projection was in Lebron James scoring (Aug 6)
+### Every projection was in 12-team scoring (Aug 6)
 
-`features.py` scores every player under `league_config_lebronjames.json` and nothing
+`features.py` scores every player under `league_config_12team.json` and nothing
 downstream re-expresses it. Invisible until now because the 12-team and 6-team configs
 differ in teams, weeks and keepers — and in nothing that touches a point value.
 
@@ -1775,7 +1775,7 @@ assumption. Set an `expected_drafted` block from real results as soon as there a
   silently redefined, per this checkpoint's own instruction. Nothing left to do here
   beyond confirming it survives the CP2 holdout.
 - **CP4** — Build both boards from one model run. Naming convention changes here:
-  `2026_DunlapFamily_Board_v9.xlsx` and `2026_LebronJames_Board_v9.xlsx`. Version
+  `2026_6Team_Board_v9.xlsx` and `2026_12Team_Board_v9.xlsx`. Version
   tracks the *model*, bumping when weights or features change — so a pure data refresh
   stays v9. Build date and git short hash go in a metadata sheet, which is what
   actually distinguishes two rebuilds of the same version. (v8 staying static across
@@ -1787,12 +1787,12 @@ assumption. Set an `expected_drafted` block from real results as soon as there a
 ### Phase 14 — Draft day prep (Aug 21–22)
 
 - Refresh ADP (it moves through August; the current pull is from late July).
-- Re-run the fast keeper filter as opposing keepers are announced — Lebron James only.
-  Dunlap Family is a straight redraft, so keeper columns are suppressed on that board.
+- Re-run the fast keeper filter as opposing keepers are announced — 12-team league only.
+  The 6-team league is a straight redraft, so keeper columns are suppressed on that board.
 - **ADP caveat for the 6-team league.** The FFC pull is `teams=12`. Six-team ADP is a
   different draft entirely — 96 players go instead of 192, and positional runs behave
   nothing alike. Either pull `teams=8` as the closest available proxy and label the
-  column honestly, or drop the ADP column from the Dunlap board rather than show a
+  column honestly, or drop the ADP column from the 6-team board rather than show a
   reference number that quietly means something else. Decide before build, not during.
 - Final boards printed and ready before noon on the 22nd.
 
@@ -1806,9 +1806,9 @@ buffer now. Previously the two days before the draft were held open deliberately
 nflverse updates, ADP shifts, and preseason injuries land in that window — and the
 Aug 21–22 Phase 14 window preserves that for the first draft.
 
-**Second league — resolved Aug 3.** `league_config_dunlap.json` created: 6 teams, no
+**Second league — resolved Aug 3.** `league_config_6team.json` created: 6 teams, no
 keepers, weeks 1–12 regular season, playoffs 13–14, scoring and roster slots identical
-to Lebron James. `build_board.py` already derives replacement level from
+to the 12-team league. `build_board.py` already derives replacement level from
 `num_teams`, so VOR recomputes correctly once it can take a `--config` flag (currently
 `CONFIG_PATH` is a module constant). Two consequences beyond the config file:
 
@@ -1819,18 +1819,18 @@ to Lebron James. `build_board.py` already derives replacement level from
 - **12-week season changes injury math.** See Phase 11.
 
 **Resolved.** Both configs now carry `regular_season_weeks`, `playoff_weeks`, and
-`fantasy_season_length`: Lebron James 1–14 with playoffs 15–17 (length 14), Dunlap
-Family 1–12 with playoffs 13–14 (length 12).
+`fantasy_season_length`: the 12-team league 1–14 with playoffs 15–17 (length 14), the
+6-team 1–12 with playoffs 13–14 (length 12).
 
 **Versioning honesty note.** `MODEL_VERSION` went 8 → 9 for a change that touched the
-filename convention and the ADP columns, not the model. The Lebron James v9 board is
+filename convention and the ADP columns, not the model. The 12-team v9 board is
 rank-for-rank and VOR-for-VOR identical to v8 across all 1088 players. By the rule
 stated below — bump only when the model changes — it should have stayed v8. Kept at 9
 because two differently-named files both calling themselves v8 would be worse, but the
 rule is only worth having if exceptions are visible, so this one is written down.
 
 **Board versioning — settled Aug 3.** One file per league, overwritten in place:
-`2026_LebronJames_Board_v9.xlsx` and `2026_DunlapFamily_Board_v9.xlsx`. The version
+`2026_12Team_Board_v9.xlsx` and `2026_6Team_Board_v9.xlsx`. The version
 number tracks the MODEL, not the build — it bumps when weights or features change and
 stays put for a data refresh. Every rebuild appends a row to a "Build History" sheet
 inside the workbook recording build number, timestamp, model version, git hash, and a
@@ -1897,7 +1897,7 @@ different rebuilds with no way to tell them apart.
     from.
   - **Verify redundancy, don't assume it.** Before deleting a superseded artifact,
     show it's superseded. `2026_Draft_Board_v8.xlsx` was removed only after confirming
-    it matched the v9 Lebron James board on all 1088 players, rank and VOR.
+    it matched the v9 12-team board on all 1088 players, rank and VOR.
 - **Every phase ends with a Git commit** at the checkpoint boundary.
 - **Exploratory "does this pattern hold" analysis is Jack's hands-on task** — Claude
   builds the scaffolding, Jack runs the exploration and brings back findings.
@@ -3128,7 +3128,7 @@ near where "he" went, and none does.
 
 ### The board
 
-`league_config_8team.json`, cloned from Lebron James with `num_teams` 8 and `keeper_rule`
+`league_config_8team.json`, cloned from the 12-team config with `num_teams` 8 and `keeper_rule`
 null (the 8-team league is redraft). Verified programmatically that no other key differs
 from the 12-team config beyond the three naming fields. Nothing in `src/` changed — the
 board is entirely a function of the config, which is what `board_label` was built for.

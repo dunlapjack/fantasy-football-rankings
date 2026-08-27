@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # feed that could have tested it does not exist. See Phase 13.8.
 FFC_TEAMS = 12
 FFC_YEAR = 2026
-FFC_FORMAT = "ppr"  # PPR, non-superflex -- matches league_config_lebronjames.json
+FFC_FORMAT = "ppr"  # PPR, non-superflex -- matches league_config_12team.json
 OFFENSE_POSITIONS = ["QB", "RB", "WR", "TE"]
 
 # ADP variants pulled on every run, and the column suffix each gets.
